@@ -114,6 +114,37 @@ def ingest_file(path: Path):
         f"document_id={document_id} | chunks={len(paragraphs)}"
     )
 
+def main():
+    if not SAMPLE_FOLDER.is_dir():
+        raise SystemExit(f"Sample folder does not exist: {SAMPLE_FOLDER}")
+
+    files = sorted(
+        path
+        for path in SAMPLE_FOLDER.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".txt", ".md"}
+    )
+
+    if not files:
+        print("No TXT or Markdown documents found.")
+        return
+
+    failures = []
+
+    for path in files:
+        try:
+            ingest_file(path)
+        except Exception as exc:
+            failures.append(path.name)
+            print(f"FAILED: {path.name}: {exc}")
+
+    print(
+        f"\nProcessed {len(files)} files; "
+        f"{len(failures)} failed."
+    )
+
+    if failures:
+        raise SystemExit(1)
+
 
 if __name__ == "__main__":
-    ingest_file(SAMPLE_FOLDER / "volunteer-handbook.txt")
+    main()
