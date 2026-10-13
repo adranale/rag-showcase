@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 
 from app.db import get_connection
 from app.search import MODEL_NAME, search_documents
+from app.generation import GenerationError, generate_answer
 
 logger = logging.getLogger(__name__)
 
@@ -102,4 +103,44 @@ def search(payload: SearchRequest, request: Request):
         "question": payload.question,
         "count": len(results),
         "results": results,
+    }
+
+@app.post("/chat")
+def chat(payload: SearchRequest, request: Request):
+    try:
+        with request.app.state.search_lock:
+            passages = search_documents(
+                model=request.app.state.embedding_model,
+                question=payload.question,
+                top_k=payload.top_k,
+            )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from None
+
+    except (psycopg.Error, RuntimeError):
+        logger.exception("Chat retrieval failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Search is temporarily unavailable",
+        ) from None
+
+    try:
+        result = generate_answer(payload.question, passages)
+
+    except GenerationError:
+        logger.exception("Answer generation failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Could not generate a valid cited answer. "
+                   "Check that Ollama is running and the model is installed.",
+        ) from None
+
+    return {
+        "question": payload.question,
+        "retrieved_count": len(passages),
+        **result,
     }
