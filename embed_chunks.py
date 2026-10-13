@@ -11,7 +11,7 @@ def main():
     print(f"Loading model: {MODEL_NAME}")
     model = SentenceTransformer(MODEL_NAME, device="cpu")
 
-    dimension = model.get_sentence_embedding_dimension()
+    dimension = model.get_sentence_transformer_output_dim()
     print(f"Embedding dimension: {dimension}")
     print(f"Maximum input length: {model.max_seq_length} tokens")
 
