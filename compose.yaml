@@ -15,5 +15,50 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: .
+    image: rag-showcase:local
+    environment:
+      DATABASE_URL: postgresql://rag:local_dev_only@db:5432/rag
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: llama3.2:3b
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - huggingface_cache:/home/appuser/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+  ui:
+    image: rag-showcase:local
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - chat_ui.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+    environment:
+      RAG_API_BASE_URL: http://api:8000
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  huggingface_cache:
