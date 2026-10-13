@@ -1,0 +1,61 @@
+[
+  {
+    "id": "travel_costs",
+    "question": "Can volunteers claim travel costs?",
+    "answerable": true,
+    "expected_answer": "Travel expenses can be reimbursed with prior approval and a valid receipt.",
+    "expected_source_titles": ["volunteer-handbook"]
+  },
+  {
+    "id": "safety_briefing",
+    "question": "What must a volunteer do before their first shift?",
+    "answerable": true,
+    "expected_answer": "Attend a safety briefing.",
+    "expected_source_titles": ["volunteer-handbook"]
+  },
+  {
+    "id": "event_end",
+    "question": "What time must public events finish?",
+    "answerable": true,
+    "expected_answer": "By 22:00.",
+    "expected_source_titles": ["event-policy"]
+  },
+  {
+    "id": "cash_counting",
+    "question": "How many people must count cash donations?",
+    "answerable": true,
+    "expected_answer": "Two authorized people.",
+    "expected_source_titles": ["donation-policy"]
+  },
+  {
+    "id": "multiple_documents",
+    "question": "What is required to reimburse volunteer travel expenses, and when are donation receipts issued?",
+    "answerable": true,
+    "expected_answer": "Travel reimbursement requires prior approval and a valid receipt. Donation receipts are issued after payment verification.",
+    "expected_source_titles": [
+      "volunteer-handbook",
+      "donation-policy"
+    ]
+  },
+  {
+    "id": "german_query",
+    "question": "Wie viele Personen müssen Bargeldspenden zählen?",
+    "answerable": true,
+    "expected_answer": "Zwei autorisierte Personen.",
+    "expected_source_titles": ["donation-policy"]
+  },
+  {
+    "id": "unknown_wifi",
+    "question": "What is the office Wi-Fi password?",
+    "answerable": false,
+    "expected_answer": "The available documents do not provide the password.",
+    "expected_source_titles": []
+  },
+  {
+    "id": "unknown_budget",
+    "question": "What is the approved annual budget for 2027?",
+    "answerable": false,
+    "expected_answer": "The available documents do not specify this budget.",
+    "expected_source_titles": []
+  }
+]
