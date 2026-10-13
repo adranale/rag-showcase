@@ -5,6 +5,10 @@ import re
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class GenerationError(Exception):
     pass
@@ -32,6 +36,7 @@ Rules:
   to true, explain briefly, and return an empty citation_ids list.
 - If insufficient_evidence is false, include at least one supporting citation.
 - Answer in the language of the question.
+- Keep the answer concise: normally one to three sentences.
 Return JSON matching the supplied schema.
 Example output format for a supported answer:
 {
@@ -98,8 +103,25 @@ def generate_answer(question: str, passages: list[dict]) -> dict:
         )
         response.raise_for_status()
 
+        body = response.json()
+
+        generation_seconds = body.get("eval_duration", 0) / 1_000_000_000
+        generated_tokens = body.get("eval_count", 0)
+
+        logger.warning(
+            "Ollama timing: total=%.2fs load=%.2fs prompt=%.2fs "
+            "generation=%.2fs tokens=%s tokens_per_second=%.2f",
+            body.get("total_duration", 0) / 1_000_000_000,
+            body.get("load_duration", 0) / 1_000_000_000,
+            body.get("prompt_eval_duration", 0) / 1_000_000_000,
+            generation_seconds,
+            generated_tokens,
+            generated_tokens / generation_seconds
+            if generation_seconds > 0 else 0,
+        )
+
         generated = GeneratedAnswer.model_validate_json(
-            response.json()["message"]["content"]
+            body["message"]["content"]
         )
 
     except httpx.HTTPStatusError as exc:

@@ -33,7 +33,7 @@ with st.sidebar:
         "Retrieved passages",
         min_value=1,
         max_value=10,
-        value=5,
+        value=3,
     )
 
     if st.button("Clear conversation"):
