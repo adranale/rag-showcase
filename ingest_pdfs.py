@@ -9,7 +9,7 @@ from extract_pdf import extract_pdf
 from import_pdf_chunks import import_chunks
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-PDF_FOLDER = PROJECT_ROOT / "data" / "sample"
+PDF_FOLDER = PROJECT_ROOT / "data" / "private"
 OUTPUT_FOLDER = PROJECT_ROOT / "output" / "pdf_batch"
 OVERLAP = 16
 
