@@ -7,3 +7,4 @@ __pycache__/
 data/private/
 certs/
 data/sample/
+output/
