@@ -2,14 +2,12 @@ from pathlib import Path
 
 from app.db import get_connection
 
-sql_path = (
-    Path(__file__).resolve().parent
-    / "sql"
-    / "001_initial_schema.sql"
-)
+sql_dir = Path(__file__).resolve().parent / "sql"
 
 with get_connection() as conn:
-    conn.execute(sql_path.read_text(encoding="utf-8"))
+    for sql_path in sorted(sql_dir.glob("*.sql")):
+        print(f"Applying {sql_path.name}")
+        conn.execute(sql_path.read_text(encoding="utf-8"))
 
     tables = conn.execute(
         """

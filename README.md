@@ -94,6 +94,25 @@ curl -X POST "http://127.0.0.1:8000/chat" \
   -d '{"question":"What is the volunteer handbook policy?","top_k":3}'
 ```
 
+## Deploy to Azure (minimum cost)
+
+Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4o-mini`, capped quota) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image.
+
+1. **Image:** the `Build image` workflow pushes `ghcr.io/adranale/rag-showcase:latest`. After the first run, set the package visibility to **Public** (GitHub → Packages → Package settings) so Container Apps can pull it without credentials. The image contains no secrets.
+2. **Provision:** `az login`, then `.\deploy\azure.ps1 -Suffix <unique-lowercase-id>`. It generates all secrets, stores them as Container Apps secrets and writes the database URL to the git-ignored `.env.azure`.
+3. **Initialise and ingest** from your machine (the script adds your IP to the DB firewall):
+   ```powershell
+   $env:DATABASE_URL = (Get-Content .env.azure).Split('=', 2)[1]
+   python init_db.py
+   python ingest_text.py      # sample documents only
+   python embed_chunks.py
+   ```
+   Do not run `ingest_pdfs.py` / `reindex_all.sh` against Azure unless the PDFs are meant to be public (`data/private/` is personal).
+4. Open the UI URL printed by the script and log in with the chosen password. The first request after idle takes about 30–60 s (cold start).
+5. Create a budget alert in Azure Cost Management. Delete everything with `az group delete --name rg-rag-showcase`.
+
+Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on `/search` and `/chat`), `APP_PASSWORD` (optional UI password). See `.env.azure.example`.
+
 ## Repository conventions
 
 - Use async route handlers for I/O-bound work
