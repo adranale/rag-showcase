@@ -11,14 +11,20 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY certs/corporate-root-ca.crt \
-    /usr/local/share/ca-certificates/corporate-root-ca.crt
+# The bracket glob makes the corporate CA optional: the build still works
+# when certs/corporate-root-ca.crt is absent (CI, Azure).
+COPY requirements.txt certs/corporate-root-ca.cr[t] /tmp/build/
 
-RUN update-ca-certificates
+RUN if [ -f /tmp/build/corporate-root-ca.crt ]; then \
+        cp /tmp/build/corporate-root-ca.crt \
+           /usr/local/share/ca-certificates/corporate-root-ca.crt; \
+    fi \
+    && update-ca-certificates
 
-COPY requirements.txt .
-
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# CPU-only torch wheels avoid downloading several GB of CUDA libraries.
+RUN python -m pip install --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r /tmp/build/requirements.txt
 
 RUN useradd --create-home appuser \
     && mkdir -p /home/appuser/.cache/huggingface \
@@ -28,6 +34,12 @@ COPY --chown=appuser:appuser app/ ./app/
 COPY --chown=appuser:appuser chat_ui.py .
 
 USER appuser
+
+# Bake the embedding model into the image so scale-from-zero starts do not
+# download it.
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+from app.search import MODEL_NAME; \
+SentenceTransformer(MODEL_NAME, device='cpu')"
 
 EXPOSE 8000 8501
 

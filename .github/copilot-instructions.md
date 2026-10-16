@@ -4,7 +4,9 @@
 RAG Showcase: a document assistant (vector search + cited answers) built with Python 3.12, FastAPI, PostgreSQL/pgvector, sentence-transformers and a local Ollama LLM. Pre-release (v0.1.0); `main` is kept stable, work happens on `dev`. Google Drive / Dropbox connectors are planned; only local files are ingested today.
 
 ## Setup & commands (Windows / PowerShell; the `.sh` scripts need Git Bash)
-- Virtualenv lives in `.venv` (git-ignored): `.\.venv\Scripts\Activate.ps1`; `pip install -r requirements.txt`
+- Virtualenv lives in `.venv` (git-ignored): `.\.venv\Scripts\Activate.ps1`
+- Install: `pip install -r requirements-dev.txt` (adds pytest); runtime-only deps are in `requirements.txt`.
+- Azure deployment: `deploy\azure.ps1` (see README "Deploy to Azure"); the image is built by `.github/workflows/build-image.yml`.
 - Database: `docker compose up -d db` (pgvector/pg16, db/user `rag`, port 5432). Full stack: `docker compose up` (db + api + Streamlit ui on :8501).
 - API: `uvicorn app.main:app --reload`; chat UI: `streamlit run chat_ui.py` (or `run_ui.sh`)
 - Tests: `pytest`; single test: `pytest tests/test_api.py::test_health -q`
@@ -17,7 +19,7 @@ RAG Showcase: a document assistant (vector search + cited answers) built with Py
 Ingestion scripts and the API share one Postgres database.
 
 **Ingestion (root-level scripts; `reindex_all.sh` runs the whole pipeline):**
-- `init_db.py` applies only `sql/001_initial_schema.sql` (hardcoded path) – a new migration file is not picked up until the script is changed.
+- `init_db.py` applies every `sql/*.sql` file in name order (`000_extensions.sql` creates the `vector` extension).
 - `ingest_text.py` (TXT/MD) and `ingest_pdfs.py` (`extract_pdf.py` → `chunk_pdf.py` → `import_pdf_chunks.py`, progress cached in `output/pdf_batch/state.json`) fill `documents`/`chunks`.
 - `embed_chunks.py` adds the `embedding` / `embedding_model` columns to `chunks` itself (`ALTER TABLE … IF NOT EXISTS`; they are not in the SQL schema) and embeds rows that are missing or were made with a different model.
 - `reset_index.sh` truncates `chunks`/`documents` (destructive). `test_db_connection.py` is a connectivity script, not a pytest test.
@@ -25,11 +27,11 @@ Ingestion scripts and the API share one Postgres database.
 **Serving (`app/`):**
 - `main.py` – routes `/health`, `/ready`, `/search`, `/chat`. The SentenceTransformer is loaded once in `lifespan` onto `app.state` and retrieval is serialized by `search_lock`. Handlers are sync `def`; error mapping: `ValueError`→422, DB errors→503, `GenerationError`→502.
 - `search.py` – embeds the question (normalized; rejects input over the model's token limit) and does cosine search (`<=>`) on `chunks` joined to `documents`, restricted to `embedding_model = MODEL_NAME` and `ingestion_status = 'indexed'`. Changing `MODEL_NAME` requires re-running `embed_chunks.py`.
-- `generation.py` – calls Ollama `/api/chat` with a JSON-schema-constrained `GeneratedAnswer`; passages are treated as untrusted. Citations are validated: `citation_ids` must be a non-empty subset of the supplied `S<n>` IDs and include every inline `[S<n>]`, otherwise `GenerationError`. Insufficient evidence returns no citations.
+- `generation.py` – provider chosen by `GENERATION_PROVIDER` (`ollama` default, `azure_openai`); both return JSON validated as `GeneratedAnswer`; passages are treated as untrusted. Citations are validated: `citation_ids` must be a non-empty subset of the supplied `S<n>` IDs and include every inline `[S<n>]`, otherwise `GenerationError`. Insufficient evidence returns no citations.
 - `db.py` – `get_connection()` opens a new psycopg connection per call from `DATABASE_URL` (no pool); callers using vectors must `register_vector(conn)`.
 
 ## Configuration
-Env / `.env` (loaded in `app/db.py`): `DATABASE_URL`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL` (default `llama3.2:3b`), `RAG_API_BASE_URL` (for `chat_ui.py`). In Docker the API reaches host Ollama via `host.docker.internal`.
+Env / `.env` (loaded in `app/db.py`): `DATABASE_URL`, `GENERATION_PROVIDER`, `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`), `OLLAMA_MODEL` (default `llama3.2:3b`), `AZURE_OPENAI_ENDPOINT` / `_DEPLOYMENT` / `_API_KEY` / `_API_VERSION`, `API_KEY` (optional `X-API-Key` check on `/search` and `/chat`), `APP_PASSWORD` (optional UI login), `RAG_API_BASE_URL` (for `chat_ui.py`). In Docker the API reaches host Ollama via `host.docker.internal`.
 
 ## Conventions
 - Use type hints and Pydantic models for request/response schemas.

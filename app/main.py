@@ -1,9 +1,11 @@
 import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from threading import Lock
 
 import psycopg
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
@@ -12,6 +14,19 @@ from app.search import MODEL_NAME, search_documents
 from app.generation import GenerationError, generate_answer
 
 logger = logging.getLogger(__name__)
+
+
+def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    # Authentication is enabled only when API_KEY is configured.
+    expected = os.getenv("API_KEY")
+
+    if expected and not (
+        x_api_key and secrets.compare_digest(x_api_key, expected)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key",
+        )
 
 
 @asynccontextmanager
@@ -76,7 +91,7 @@ def ready():
     }
 
 
-@app.post("/search")
+@app.post("/search", dependencies=[Depends(require_api_key)])
 def search(payload: SearchRequest, request: Request):
     try:
         with request.app.state.search_lock:
@@ -105,7 +120,7 @@ def search(payload: SearchRequest, request: Request):
         "results": results,
     }
 
-@app.post("/chat")
+@app.post("/chat", dependencies=[Depends(require_api_key)])
 def chat(payload: SearchRequest, request: Request):
     try:
         with request.app.state.search_lock:

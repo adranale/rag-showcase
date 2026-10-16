@@ -1,4 +1,5 @@
 import os
+import secrets
 import time
 
 import httpx
@@ -11,11 +12,26 @@ API_BASE_URL = os.getenv(
     "RAG_API_BASE_URL",
     "http://127.0.0.1:8000",
 ).rstrip("/")
+API_KEY = os.getenv("API_KEY")
+APP_PASSWORD = os.getenv("APP_PASSWORD")
 
 st.set_page_config(
     page_title="Document Assistant",
     page_icon="📚",
 )
+
+if APP_PASSWORD and not st.session_state.get("authenticated"):
+    st.title("Document Assistant")
+    entered = st.text_input("Password", type="password")
+
+    if entered:
+        if secrets.compare_digest(entered, APP_PASSWORD):
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+
+    st.stop()
 
 st.title("Document Assistant")
 st.caption(
@@ -97,6 +113,7 @@ if question := st.chat_input("Ask a question about your documents"):
         with st.spinner("Searching documents and generating an answer..."):
             response = httpx.post(
                 f"{API_BASE_URL}/chat",
+                headers={"X-API-Key": API_KEY} if API_KEY else {},
                 json={
                     "question": question,
                     "top_k": top_k,
@@ -134,7 +151,7 @@ if question := st.chat_input("Ask a question about your documents"):
             "role": "assistant",
             "content": (
                 "Could not reach the API, or the request timed out. "
-                "Check that FastAPI and Ollama are running."
+                "Check that FastAPI and the answer provider (Ollama / Azure OpenAI) are running."
             ),
             "error": True,
         }

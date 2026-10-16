@@ -80,6 +80,21 @@ def test_search_result_structure(client):
         assert isinstance(result["similarity"], (int, float))
 
 
+def test_api_key_is_enforced_when_configured(client, monkeypatch):
+    monkeypatch.setenv("API_KEY", "secret")
+    payload = {"question": "Travel expenses?", "top_k": 1}
+
+    assert client.post("/search", json=payload).status_code == 401
+    assert client.post("/chat", json=payload).status_code == 401
+    assert (
+        client.post(
+            "/search", json=payload, headers={"X-API-Key": "wrong"}
+        ).status_code
+        == 401
+    )
+    assert client.get("/health").status_code == 200
+
+
 @pytest.mark.parametrize(
     "payload",
     [
