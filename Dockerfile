@@ -13,7 +13,7 @@ WORKDIR /app
 
 # The bracket glob makes the corporate CA optional: the build still works
 # when certs/corporate-root-ca.crt is absent (CI, Azure).
-COPY requirements.txt certs/corporate-root-ca.cr[t] /tmp/build/
+COPY requirements.txt cert[s]/corporate-root-ca.crt /tmp/build/
 
 RUN if [ -f /tmp/build/corporate-root-ca.crt ]; then \
         cp /tmp/build/corporate-root-ca.crt \
