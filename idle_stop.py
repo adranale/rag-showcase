@@ -9,6 +9,8 @@ import sys
 
 from app import azure_arm
 
+METRIC_SLACK_MINUTES = 5
+
 
 def run(server_id: str, app_id: str, idle_minutes: int) -> str:
     state = azure_arm.server_state(server_id)
@@ -18,6 +20,12 @@ def run(server_id: str, app_id: str, idle_minutes: int) -> str:
     requests = azure_arm.request_count(app_id, idle_minutes)
     if requests > 0:
         return f"{requests} API request(s) in the last {idle_minutes} min; keeping the server running"
+
+    # Metrics lag by a few minutes, hence the slack; a freshly started server
+    # (e.g. for an ingestion run) must not be stopped before the idle window passed.
+    uptime = azure_arm.uptime_minutes(server_id, idle_minutes)
+    if uptime + METRIC_SLACK_MINUTES < idle_minutes:
+        return f"server up for about {uptime} min, less than {idle_minutes}; keeping it running"
 
     azure_arm.stop_server(server_id)
     return f"no API requests for {idle_minutes} min; stop requested"

@@ -86,18 +86,21 @@ def test_get_connection_error_unchanged_without_auto_stop(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("state", "requests", "stops"),
+    ("state", "requests", "uptime", "stops"),
     [
-        ("Ready", 0, True),
-        ("Ready", 3, False),
-        ("Stopped", 0, False),
-        ("Starting", 0, False),
+        ("Ready", 0, 30, True),
+        ("Ready", 0, 27, True),
+        ("Ready", 0, 5, False),
+        ("Ready", 3, 30, False),
+        ("Stopped", 0, 0, False),
+        ("Starting", 0, 0, False),
     ],
 )
-def test_idle_stop_decisions(monkeypatch, state, requests, stops):
+def test_idle_stop_decisions(monkeypatch, state, requests, uptime, stops):
     stopped = []
     monkeypatch.setattr(azure_arm, "server_state", lambda _id: state)
     monkeypatch.setattr(azure_arm, "request_count", lambda _id, _m: requests)
+    monkeypatch.setattr(azure_arm, "uptime_minutes", lambda _id, _m: uptime)
     monkeypatch.setattr(azure_arm, "stop_server", lambda _id: stopped.append(_id))
 
     idle_stop.run(SERVER, APP, 30)
@@ -139,6 +142,21 @@ def test_request_count_sums_metric_points(monkeypatch):
 
     monkeypatch.setattr(azure_arm, "_call", lambda *a, **k: Response())
     assert azure_arm.request_count(APP, 30) == 3
+
+
+def test_uptime_minutes_counts_metric_points(monkeypatch):
+    body = {
+        "value": [
+            {"timeseries": [{"data": [{"average": 1.0}, {}, {"average": 0.0}]}]},
+        ]
+    }
+
+    class Response:
+        def json(self):
+            return body
+
+    monkeypatch.setattr(azure_arm, "_call", lambda *a, **k: Response())
+    assert azure_arm.uptime_minutes(SERVER, 30) == 2
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not installed")

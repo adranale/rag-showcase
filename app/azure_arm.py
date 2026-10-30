@@ -73,3 +73,27 @@ def request_count(app_id: str, minutes: int) -> int:
         for series in metric.get("timeseries", []):
             total += sum(point.get("total") or 0 for point in series.get("data", []))
     return int(total)
+
+
+def uptime_minutes(server_id: str, minutes: int) -> int:
+    """Minutes with CPU metric data in the last `minutes`; a stopped server reports none."""
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=minutes)
+    body = _call(
+        "GET",
+        server_id,
+        "/providers/Microsoft.Insights/metrics",
+        {
+            "api-version": METRICS_API_VERSION,
+            "metricnames": "cpu_percent",
+            "aggregation": "Average",
+            "interval": "PT1M",
+            "timespan": f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}",
+        },
+    ).json()
+
+    points = 0
+    for metric in body.get("value", []):
+        for series in metric.get("timeseries", []):
+            points += sum(1 for p in series.get("data", []) if p.get("average") is not None)
+    return points
