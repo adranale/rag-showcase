@@ -2,7 +2,7 @@ name: Build image
 
 on:
   push:
-    branches: [main, azure-deployment]
+    branches: [main, azure-deployment, feature/storage-connectors]
     paths:
       - app/**
       - chat_ui.py
