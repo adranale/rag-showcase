@@ -64,7 +64,9 @@ function Invoke-Az {
     }
     $output = & az @azArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
-        $detail = ($output | ForEach-Object { "$_" } | Select-Object -Last 5) -join "`n"
+        $lines = @($output | ForEach-Object { "$_" } | Where-Object { $_.Trim() })
+        $errorLines = @($lines | Where-Object { $_ -match '^(ERROR|error:|usage:)|unrecognized|invalid|\(\w+\)' })
+        $detail = (@($errorLines | Select-Object -First 6) + @($lines | Select-Object -First 2) | Select-Object -Unique) -join "`n"
         throw "Azure CLI step failed: $label (exit code $LASTEXITCODE).`n$(Protect-Text $detail)"
     }
     ($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] } |
