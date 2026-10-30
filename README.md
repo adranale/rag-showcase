@@ -83,7 +83,7 @@ Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` 
    ```powershell
    curl.exe -u "<APP_KEY>:<APP_SECRET>" -d "code=<CODE>&grant_type=authorization_code" https://api.dropboxapi.com/oauth2/token
    ```
-   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the GitHub workflows the folder input may be left empty: it then falls back to the environment **variable** `INGEST_FOLDER` (Settings → Environments → *Variables*; `azure-test` for the Azure job, `remote-ingestion` for the runner workflow). It is not a secret.
+   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the Azure workflow the folder input may be left empty: it then falls back to the `azure-test` environment **variable** `INGEST_FOLDER` (Settings → Environments → *Variables*). It is not a secret.
 
 ### Google Drive setup (service account, recommended)
 1. In Google Cloud Console create a project, enable the **Google Drive API**, create a **service account** and add a JSON key (store it securely; never commit it).
@@ -91,29 +91,10 @@ Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` 
 3. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the *content* of the key file. `--folder` is the folder ID (the last part of the folder URL).
 4. Alternative (user OAuth): set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` (refresh token obtained for the `drive.readonly` scope).
 
-### Run from GitHub Actions
-The **Ingest remote documents** workflow (manual *Run workflow*) installs dependencies, runs `init_db.py`, `ingest_remote.py` and `embed_chunks.py` against the Azure database. In GitHub: Settings → Environments → create `remote-ingestion` (add required reviewers) and add these **environment secrets** (only those of the provider you use):
-
-| Secret | Value |
-|---|---|
-| `DATABASE_URL` | PostgreSQL URL of the Azure database (`sslmode=require`) |
-| `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN` | Dropbox app credentials (above) |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | full service account key JSON (or the three `GOOGLE_OAUTH_*` secrets) |
-| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | only for `open_firewall` (same values as the deploy workflow; the OIDC federated credential subject must also cover `environment:remote-ingestion`) |
-
-With `open_firewall` (default) the runner's IP is allowed on server `pg-rag-<suffix>` for the run and removed afterwards; untick it if the database is reachable otherwise. Inputs: `provider`, `folder`, `delete_removed`, `suffix`, `resource_group`. Secrets are passed only as step environment variables and are not echoed.
-
 ### Run inside Azure (Container Apps Job)
-Alternative to the GitHub runner: `deploy/azure-ingest-job.ps1` creates/updates the job `rag-ingest` in the existing Container Apps environment (`cae-rag-showcase`). The job runs the **same image as the deployed `rag-api`** (read from the app; the image must be built from a commit that contains `ingest_job.py`, so redeploy `rag-api` with a new image first) and executes `python ingest_job.py`, i.e. `init_db.py` → `ingest_remote.py` → `embed_chunks.py`, configured by the env vars `PROVIDER` / `FOLDER` (1 CPU, 2 GiB, no retries by default, 1 h timeout). `DATABASE_URL` is reused from the `db-url` secret of `rag-api` (never printed, never stored in the repo); the PostgreSQL "allow Azure services" rule gives the job access, so no firewall rule is needed.
+`deploy/azure-ingest-job.ps1` creates/updates the job `rag-ingest` in the existing Container Apps environment (`cae-rag-showcase`). The job runs the **same image as the deployed `rag-api`** (read from the app; the image must be built from a commit that contains `ingest_job.py`, so redeploy `rag-api` with a new image first) and executes `python ingest_job.py`, i.e. `init_db.py` → `ingest_remote.py` → `embed_chunks.py`, configured by the env vars `PROVIDER` / `FOLDER` (1 CPU, 2 GiB, no retries by default, 1 h timeout). `DATABASE_URL` is reused from the `db-url` secret of `rag-api` (never printed, never stored in the repo); the PostgreSQL "allow Azure services" rule gives the job access, so no firewall rule is needed.
 
-| | GitHub runner (`ingest-remote.yml`) | Azure job (`azure-ingest-job.ps1`) |
-|---|---|---|
-| Runs on | GitHub-hosted runner, temporary firewall rule | Container Apps in your subscription, no firewall change |
-| DB credentials | `DATABASE_URL` GitHub secret | reused from the `rag-api` secret |
-| Provider secrets | GitHub environment `remote-ingestion` | Container Apps job secrets (set from the caller's env vars) |
-| Schedule | none (manual) | optional cron (`-Schedule`, UTC) |
-| Cost | GitHub minutes | job bills only while an execution runs (scale-to-zero); Log Analytics ingestion and PostgreSQL are billed regardless |
-| Use when | ad-hoc runs, one-off, no extra Azure objects | recurring syncs, or the database must not be opened to runners |
+The job bills only while an execution runs (scale-to-zero); Log Analytics ingestion and PostgreSQL are billed regardless. An optional cron schedule is available (`-Schedule`, UTC).
 
 Security: provider credentials and the DB URL are stored as Container Apps secrets, which anyone with Contributor (or higher) on the resource group can read. They are passed to `az` as command-line arguments (visible to local process listings on the machine running the script); use a dedicated read-only provider app/token.
 
@@ -125,7 +106,7 @@ pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Prov
 # recurring (UTC cron): add -Schedule '0 3 * * *'; Google Drive: -Provider google_drive -Folder <folderId>
 ```
 
-Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets listed above as `azure-test` environment secrets; to use `remote-ingestion` instead, change the `environment:` line and add the federated credential/Azure secrets there).
+Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) as `azure-test` environment secrets and the optional `INGEST_FOLDER` variable). The database must be running (auto-stop) when the job starts.
 
 View executions and logs:
 

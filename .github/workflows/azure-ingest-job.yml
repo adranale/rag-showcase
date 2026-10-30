@@ -4,8 +4,7 @@ name: Azure ingestion job
 # optionally starts it, so remote ingestion (Dropbox / Google Drive + embedding) runs
 # INSIDE Azure. Provider credentials are read from secrets of the "azure-test"
 # environment (the same environment as the deploy workflow; add the provider secrets
-# there, or switch the environment name below to "remote-ingestion" and add the
-# Azure OIDC secrets to it, including a federated credential for that environment).
+# there).
 on:
   workflow_dispatch:
     inputs:
