@@ -16,7 +16,7 @@ on:
         type: string
       location:
         description: Azure region
-        default: westeurope
+        default: swedencentral
         type: string
       image_sha:
         description: Image tag (commit SHA built by "Build image"); empty = this commit

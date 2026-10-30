@@ -96,7 +96,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 
 ## Deploy to Azure (small test deployment, sample data only)
 
-Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4o-mini`, GlobalStandard deployment of 10K capacity) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
+Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4o-mini`, Standard (regional) deployment of 10K capacity, default region `swedencentral`; override with `-OpenAiSku`) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
 
 Commands below use PowerShell 7 (`pwsh`) on macOS (`brew install powershell azure-cli`); run them from the repository root.
 

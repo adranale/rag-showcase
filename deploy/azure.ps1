@@ -27,12 +27,13 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')][string]$SubscriptionId,
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]{3,10}$')][string]$Suffix,
-    [string]$Location = 'westeurope',
+    [string]$Location = 'swedencentral',
     [ValidatePattern('^[A-Za-z0-9._()-]{1,90}$')][string]$ResourceGroup = 'rg-rag-showcase',
     # Default: the image CI built for the current commit (immutable). Must be public on GHCR.
     [string]$Image = '',
     [string]$OpenAiModel = 'gpt-4o-mini',
     [string]$OpenAiModelVersion = '2024-07-18',
+    [ValidateSet('Standard', 'GlobalStandard', 'DataZoneStandard')][string]$OpenAiSku = 'Standard',
     [int]$OpenAiCapacityK = 10,
     [switch]$PreflightOnly,
     [switch]$AssumeYes,
@@ -188,14 +189,14 @@ try {
     $skus = @($models | Where-Object {
             $_.kind -eq 'OpenAI' -and $_.model.name -eq $OpenAiModel -and $_.model.version -eq $OpenAiModelVersion
         } | ForEach-Object { $_.model.skus.name })
-    if ('GlobalStandard' -notin $skus) {
-        $problems.Add("Model $OpenAiModel $OpenAiModelVersion with GlobalStandard is not listed for $Location. Not switching automatically; choose region/model yourself.")
+    if ($OpenAiSku -notin $skus) {
+        $problems.Add("Model $OpenAiModel $OpenAiModelVersion with $OpenAiSku is not listed for $Location. Not switching automatically; choose region/model yourself.")
     }
     $usages = (Invoke-Az 'query model quota' rest --method get --url "$base/usages?api-version=2024-10-01" --output json | ConvertFrom-Json).value
-    $usage = $usages | Where-Object { $_.name.value -eq "OpenAI.GlobalStandard.$OpenAiModel" } | Select-Object -First 1
-    if ($null -eq $usage) { $manual.Add("OpenAI quota for GlobalStandard $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
+    $usage = $usages | Where-Object { $_.name.value -eq     "OpenAI.$OpenAiSku.$OpenAiModel" } | Select-Object -First 1
+        if ($null -eq $usage) { $manual.Add("OpenAI quota for $OpenAiSku $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
     elseif (($usage.limit - $usage.currentValue) -lt $OpenAiCapacityK) {
-        $problems.Add("Not enough GlobalStandard $OpenAiModel quota in $Location (free: $($usage.limit - $usage.currentValue)K, requested: ${OpenAiCapacityK}K).")
+        $problems.Add("Not enough $OpenAiSku $OpenAiModel quota in $Location (free: $($usage.limit - $usage.currentValue)K, requested: ${OpenAiCapacityK}K).")
     }
 }
 catch {
@@ -300,7 +301,7 @@ Invoke-Az 'create Azure OpenAI account' cognitiveservices account create `
 Invoke-Az 'create Azure OpenAI deployment' cognitiveservices account deployment create `
     --resource-group $ResourceGroup --name $aoaiName --deployment-name $OpenAiModel `
     --model-name $OpenAiModel --model-version $OpenAiModelVersion --model-format OpenAI `
-    --sku-name GlobalStandard --sku-capacity $OpenAiCapacityK --output none | Out-Null
+    --sku-name $OpenAiSku --sku-capacity $OpenAiCapacityK --output none | Out-Null
 $aoaiEndpoint = Assert-Value (Invoke-Az 'read Azure OpenAI endpoint' cognitiveservices account show `
         --resource-group $ResourceGroup --name $aoaiName --query properties.endpoint --output tsv) `
     'Azure OpenAI endpoint' '^https://[a-z0-9-]+\.openai\.azure\.com/?$'
