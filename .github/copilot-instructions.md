@@ -59,6 +59,10 @@ Required work:
 
 Validation without deploying: parse the PowerShell script, run tests, validate workflow/config syntax, build/inspect the container if practical, add focused tests; report tested / failed / untestable. Deliver: changed-files summary with reasons, remaining limitations and manual Azure checks, exact macOS commands separated into safe local/preflight vs billable.
 
+## Working agreement
+- If a request is ambiguous, ask the user (ask_user) before acting; do not guess and implement.
+- Do not commit, push, deploy, or delete anything without explicit approval.
+
 ## Security
 - Never commit secrets. API keys and OAuth credentials (Google, Dropbox, LLM providers) come from environment variables / `.env` (git-ignored).
 - Do not log document contents or access tokens.
