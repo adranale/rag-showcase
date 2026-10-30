@@ -21,8 +21,8 @@ on:
           - dropbox
           - google_drive
       folder:
-        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID
-        required: true
+        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID; empty = use the INGEST_FOLDER environment variable
+        default: ""
         type: string
       schedule:
         description: Cron expression in UTC (5 fields); empty = manual trigger only
@@ -52,7 +52,7 @@ jobs:
     env:
       SUFFIX: ${{ inputs.suffix }}
       PROVIDER: ${{ inputs.provider }}
-      FOLDER: ${{ inputs.folder }}
+      FOLDER: ${{ inputs.folder || vars.INGEST_FOLDER }}
       SCHEDULE: ${{ inputs.schedule }}
       RESOURCE_GROUP: ${{ inputs.resource_group }}
     steps:

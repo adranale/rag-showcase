@@ -83,7 +83,7 @@ Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` 
    ```powershell
    curl.exe -u "<APP_KEY>:<APP_SECRET>" -d "code=<CODE>&grant_type=authorization_code" https://api.dropboxapi.com/oauth2/token
    ```
-   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope).
+   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the GitHub workflows the folder input may be left empty: it then falls back to the environment **variable** `INGEST_FOLDER` (Settings → Environments → *Variables*; `azure-test` for the Azure job, `remote-ingestion` for the runner workflow). It is not a secret.
 
 ### Google Drive setup (service account, recommended)
 1. In Google Cloud Console create a project, enable the **Google Drive API**, create a **service account** and add a JSON key (store it securely; never commit it).

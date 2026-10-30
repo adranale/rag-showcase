@@ -14,8 +14,8 @@ on:
           - dropbox
           - google_drive
       folder:
-        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID
-        required: true
+        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID; empty = use the INGEST_FOLDER environment variable
+        default: ""
         type: string
       delete_removed:
         description: Hard-delete documents whose remote file vanished (default keeps a tombstone)
@@ -48,7 +48,7 @@ jobs:
     environment: remote-ingestion
     env:
       PROVIDER: ${{ inputs.provider }}
-      FOLDER: ${{ inputs.folder }}
+      FOLDER: ${{ inputs.folder || vars.INGEST_FOLDER }}
       DELETE_REMOVED: ${{ inputs.delete_removed }}
       FIREWALL_RULE: allow-ci-ingest
     steps:
