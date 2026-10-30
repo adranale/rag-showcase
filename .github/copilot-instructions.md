@@ -62,6 +62,7 @@ Validation without deploying: parse the PowerShell script, run tests, validate w
 ## Working agreement
 - If a request is ambiguous, ask the user (ask_user) before acting; do not guess and implement.
 - Do not commit, push, deploy, or delete anything without explicit approval.
+- Commit messages must not mention Copilot or AI tools: no "Co-authored-by: Copilot" trailer, no tool names.
 
 ## Security
 - Never commit secrets. API keys and OAuth credentials (Google, Dropbox, LLM providers) come from environment variables / `.env` (git-ignored).
