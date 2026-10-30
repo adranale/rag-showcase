@@ -141,6 +141,28 @@ az postgres flexible-server firewall-rule delete --resource-group rg-rag-showcas
   ```
   (`/ready` shows `vector_extension` only after `init_db.py` ran.)
 
+### Deploy from GitHub Actions (alternative to steps 2–4)
+The `Deploy to Azure` workflow (manual *Run workflow*) runs the same script, then initialises the DB and ingests the sample data, then removes the CI firewall rule. It signs in with OIDC (no stored Azure password). `preflight_only` is on by default; untick it to create resources.
+
+One-time setup:
+```powershell
+$sub = '<subscription-id>'
+az ad app create --display-name rag-showcase-github --query appId -o tsv        # -> <client-id>
+az ad sp create --id <client-id>
+az role assignment create --assignee <client-id> --role Contributor --scope /subscriptions/$sub
+az ad app federated-credential create --id <client-id> --parameters '{"name":"github-azure-test","issuer":"https://token.actions.githubusercontent.com","subject":"repo:adranale/rag-showcase:environment:azure-test","audiences":["api://AzureADTokenExchange"]}'
+```
+In GitHub: Settings → Environments → create `azure-test` (add yourself as required reviewer), and add these **environment secrets**:
+
+| Secret | Value |
+|---|---|
+| `AZURE_CLIENT_ID` | app registration (client) ID from above |
+| `AZURE_TENANT_ID` | Azure tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | the NGO subscription ID |
+| `RAG_UI_PASSWORD` | UI login password (8–64 chars: letters, digits, `. _ ~ + @ #` or `-`) |
+
+The credentials generated in CI are discarded with the runner. Retrieve them later from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`). The workflow is not idempotent either: after a failed run, delete the resource group before retrying.
+
 ### Security and networking notes
 - PostgreSQL is created with `--public-access 0.0.0.0`, Azure's “allow Azure services” rule: **any resource in any Azure tenant** may attempt to connect. Access still requires the credentials; TLS is required (`require_secure_transport=on`, `sslmode=require`). Your machine gets a single `/32` rule (`allow-my-ip`) for ingestion; delete it afterwards.
 - The API connects with the PostgreSQL administrator (`ragadmin`), and the same account is used for schema creation and ingestion. A separate least-privilege runtime role is a recommended follow-up, not implemented. Private networking (VNet/private endpoints) would add cost and complexity and is not used.

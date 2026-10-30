@@ -13,6 +13,7 @@
 
     Generated secrets are saved to the git-ignored .env.azure (mode 600 on
     macOS/Linux) BEFORE anything billable is created, and are never printed.
+    The UI password is read from $env:RAG_UI_PASSWORD when set (CI), else prompted.
 
     Run with -PreflightOnly first: it performs every check and creates nothing.
 
@@ -34,12 +35,14 @@ param(
     [string]$OpenAiModelVersion = '2024-07-18',
     [int]$OpenAiCapacityK = 10,
     [switch]$PreflightOnly,
-    [switch]$AssumeYes
+    [switch]$AssumeYes,
+    # Where to write the generated credentials (default: .env.azure in the repo root).
+    [string]$EnvFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $script:SecretValues = [System.Collections.Generic.List[string]]::new()
-$envFile = Join-Path (Split-Path $PSScriptRoot -Parent) '.env.azure'
+$envFile = if ($EnvFile) { $EnvFile } else { Join-Path (Split-Path $PSScriptRoot -Parent) '.env.azure' }
 
 function Protect-Text([string]$Text) {
     foreach ($secret in $script:SecretValues) {
@@ -224,8 +227,11 @@ if (-not $AssumeYes) {
     $answer = Read-Host "Create billable resources in subscription '$($sub.name)' ($($sub.id))? Type yes to continue"
     if ($answer -ne 'yes') { throw 'Aborted by user. Nothing was created.' }
 }
-$appPassword = Read-Host 'Choose the UI password (8-64 chars: letters, digits and . _ ~ + @ # -)' -AsSecureString |
-    ConvertFrom-SecureString -AsPlainText
+$appPassword = $env:RAG_UI_PASSWORD
+if (-not $appPassword) {
+    $appPassword = Read-Host 'Choose the UI password (8-64 chars: letters, digits and . _ ~ + @ # -)' -AsSecureString |
+        ConvertFrom-SecureString -AsPlainText
+}
 if ($appPassword -notmatch '^[A-Za-z0-9._~+@#-]{8,64}$') {
     throw 'UI password is empty or uses unsupported characters/length. Nothing was created.'
 }

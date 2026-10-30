@@ -1,0 +1,105 @@
+name: Deploy to Azure
+
+# Manual trigger only. Runs the preflight checks by default; set preflight_only=false
+# to create billable resources. Protect the "azure-test" environment with required
+# reviewers so every run needs approval.
+on:
+  workflow_dispatch:
+    inputs:
+      suffix:
+        description: Unique lowercase id for globally unique names (3-10 chars a-z0-9)
+        required: true
+        type: string
+      resource_group:
+        description: Resource group to create
+        default: rg-rag-showcase
+        type: string
+      location:
+        description: Azure region
+        default: westeurope
+        type: string
+      image_sha:
+        description: Image tag (commit SHA built by "Build image"); empty = this commit
+        default: ""
+        type: string
+      preflight_only:
+        description: Only run checks, create nothing
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      SUFFIX: ${{ inputs.suffix }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      LOCATION: ${{ inputs.location }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha || github.sha }}
+      ENV_FILE: ${{ runner.temp }}/rag-azure.env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Preflight checks
+        if: ${{ inputs.preflight_only }}
+        shell: pwsh
+        run: >
+          ./deploy/azure.ps1
+          -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          -Suffix $env:SUFFIX -ResourceGroup $env:RESOURCE_GROUP -Location $env:LOCATION
+          -Image $env:IMAGE -EnvFile $env:ENV_FILE -PreflightOnly
+
+      - name: Provision Azure resources
+        if: ${{ !inputs.preflight_only }}
+        shell: pwsh
+        env:
+          RAG_UI_PASSWORD: ${{ secrets.RAG_UI_PASSWORD }}
+        run: >
+          ./deploy/azure.ps1
+          -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          -Suffix $env:SUFFIX -ResourceGroup $env:RESOURCE_GROUP -Location $env:LOCATION
+          -Image $env:IMAGE -EnvFile $env:ENV_FILE -AssumeYes
+
+      - uses: actions/setup-python@v5
+        if: ${{ !inputs.preflight_only }}
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Initialise database and ingest sample data
+        if: ${{ !inputs.preflight_only }}
+        shell: pwsh
+        run: |
+          $line = Get-Content $env:ENV_FILE | Where-Object { $_ -like 'DATABASE_URL=*' }
+          $url = $line.Substring('DATABASE_URL='.Length)
+          Write-Output "::add-mask::$url"
+          $env:DATABASE_URL = $url
+          python -m pip install -r requirements.txt
+          python init_db.py
+          python ingest_text.py
+          python embed_chunks.py
+
+      - name: Remove CI firewall rule and credentials file
+        if: ${{ always() && !inputs.preflight_only }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue $env:ENV_FILE
+          az postgres flexible-server firewall-rule delete `
+            --resource-group $env:RESOURCE_GROUP --name "pg-rag-$env:SUFFIX" `
+            --rule-name allow-my-ip --subscription '${{ secrets.AZURE_SUBSCRIPTION_ID }}' --yes
