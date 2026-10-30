@@ -338,8 +338,9 @@ if (Test-Path $envFile) {
     Write-Host "Reusing the credentials from $envFile (not modified)."
 }
 elseif ($found['API app']) {
-    $databaseUrl = Invoke-Az 'read existing database secret' containerapp secret show --resource-group $ResourceGroup --name rag-api --secret-name db-url --show-values --query value --output tsv
-    $apiKey = Invoke-Az 'read existing API key secret' containerapp secret show --resource-group $ResourceGroup --name rag-api --secret-name api-key --show-values --query value --output tsv
+    $secrets = Invoke-Az 'read existing app secrets' containerapp secret list --resource-group $ResourceGroup --name rag-api --show-values --output json | ConvertFrom-Json
+    $databaseUrl = ($secrets | Where-Object name -eq 'db-url').value
+    $apiKey = ($secrets | Where-Object name -eq 'api-key').value
     Write-Host 'Reusing the credentials stored as secrets of the existing rag-api app.'
 }
 elseif ($pgExists) {

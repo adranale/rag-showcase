@@ -76,7 +76,7 @@ def test_script_is_resumable_without_rotating_credentials(script_text):
     assert "not idempotent" not in script_text.lower().replace("not be idempotent", "")
     # Existing credentials are reused (file, then rag-api secrets); never regenerated
     # when the server exists, and the file is only created when absent.
-    assert "secret show" in script_text
+    assert "secret list" in script_text
     assert "The script will not reset the admin password" in script_text
     assert "if (-not $credentialsSaved)" in script_text
     assert "New-Item -ItemType File -Path $envFile -ErrorAction Stop" in script_text
