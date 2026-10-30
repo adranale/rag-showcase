@@ -1,0 +1,84 @@
+name: Azure ingestion job
+
+# Manual trigger only. Creates/updates the "rag-ingest" Azure Container Apps Job and
+# optionally starts it, so remote ingestion (Dropbox / Google Drive + embedding) runs
+# INSIDE Azure. Provider credentials are read from secrets of the "azure-test"
+# environment (the same environment as the deploy workflow; add the provider secrets
+# there, or switch the environment name below to "remote-ingestion" and add the
+# Azure OIDC secrets to it, including a federated credential for that environment).
+on:
+  workflow_dispatch:
+    inputs:
+      suffix:
+        description: Suffix used by the Azure deployment (3-10 chars a-z0-9)
+        required: true
+        type: string
+      provider:
+        description: Document source
+        required: true
+        type: choice
+        options:
+          - dropbox
+          - google_drive
+      folder:
+        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID
+        required: true
+        type: string
+      schedule:
+        description: Cron expression in UTC (5 fields); empty = manual trigger only
+        default: ""
+        type: string
+      start_now:
+        description: Start an execution right away
+        default: true
+        type: boolean
+      resource_group:
+        description: Resource group of the deployment
+        default: rg-rag-showcase
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-ingest-job
+  cancel-in-progress: false
+
+jobs:
+  ingest-job:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      SUFFIX: ${{ inputs.suffix }}
+      PROVIDER: ${{ inputs.provider }}
+      FOLDER: ${{ inputs.folder }}
+      SCHEDULE: ${{ inputs.schedule }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create or update the job
+        shell: pwsh
+        env:
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+        run: >
+          ./deploy/azure-ingest-job.ps1
+          -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX
+          -Provider $env:PROVIDER -Folder $env:FOLDER
+          -Schedule $env:SCHEDULE -AssumeYes
+          ${{ inputs.start_now && '-StartNow' || '' }}

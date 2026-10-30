@@ -103,6 +103,39 @@ The **Ingest remote documents** workflow (manual *Run workflow*) installs depend
 
 With `open_firewall` (default) the runner's IP is allowed on server `pg-rag-<suffix>` for the run and removed afterwards; untick it if the database is reachable otherwise. Inputs: `provider`, `folder`, `delete_removed`, `suffix`, `resource_group`. Secrets are passed only as step environment variables and are not echoed.
 
+### Run inside Azure (Container Apps Job)
+Alternative to the GitHub runner: `deploy/azure-ingest-job.ps1` creates/updates the job `rag-ingest` in the existing Container Apps environment (`cae-rag-showcase`). The job runs the **same image as the deployed `rag-api`** (read from the app; the image must be built from a commit that contains `ingest_job.py`, so redeploy `rag-api` with a new image first) and executes `python ingest_job.py`, i.e. `init_db.py` → `ingest_remote.py` → `embed_chunks.py`, configured by the env vars `PROVIDER` / `FOLDER` (1 CPU, 2 GiB, no retries by default, 1 h timeout). `DATABASE_URL` is reused from the `db-url` secret of `rag-api` (never printed, never stored in the repo); the PostgreSQL "allow Azure services" rule gives the job access, so no firewall rule is needed.
+
+| | GitHub runner (`ingest-remote.yml`) | Azure job (`azure-ingest-job.ps1`) |
+|---|---|---|
+| Runs on | GitHub-hosted runner, temporary firewall rule | Container Apps in your subscription, no firewall change |
+| DB credentials | `DATABASE_URL` GitHub secret | reused from the `rag-api` secret |
+| Provider secrets | GitHub environment `remote-ingestion` | Container Apps job secrets (set from the caller's env vars) |
+| Schedule | none (manual) | optional cron (`-Schedule`, UTC) |
+| Cost | GitHub minutes | job bills only while an execution runs (scale-to-zero); Log Analytics ingestion and PostgreSQL are billed regardless |
+| Use when | ad-hoc runs, one-off, no extra Azure objects | recurring syncs, or the database must not be opened to runners |
+
+Security: provider credentials and the DB URL are stored as Container Apps secrets, which anyone with Contributor (or higher) on the resource group can read. They are passed to `az` as command-line arguments (visible to local process listings on the machine running the script); use a dedicated read-only provider app/token.
+
+Run (PowerShell 7, `az login` done; export the provider credentials as env vars first):
+
+```powershell
+$env:DROPBOX_APP_KEY = '...'; $env:DROPBOX_APP_SECRET = '...'; $env:DROPBOX_REFRESH_TOKEN = '...'
+pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Provider dropbox -Folder /Documents/rag -StartNow
+# recurring (UTC cron): add -Schedule '0 3 * * *'; Google Drive: -Provider google_drive -Folder <folderId>
+```
+
+Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets listed above as `azure-test` environment secrets; to use `remote-ingestion` instead, change the `environment:` line and add the federated credential/Azure secrets there).
+
+View executions and logs:
+
+```powershell
+az containerapp job execution list --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --output table
+# logs: Log Analytics workspace of the environment (may lag a few minutes)
+az monitor log-analytics query --workspace <workspace-customer-id> --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '<execution-name>' | project TimeGenerated, Log_s | order by TimeGenerated asc"
+```
+
+Delete the job (credentials stored in it go away with it): `az containerapp job delete --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --yes`.
 ## Environment and secrets
 
 This project expects configuration through environment variables or a local `.env` file (git-ignored). Keep secrets out of source control.

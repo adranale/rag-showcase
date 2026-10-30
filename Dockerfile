@@ -32,6 +32,11 @@ RUN useradd --create-home appuser \
 
 COPY --chown=appuser:appuser app/ ./app/
 COPY --chown=appuser:appuser chat_ui.py idle_stop.py ./
+# Remote ingestion job (deploy/azure-ingest-job.ps1) runs from the same image.
+COPY --chown=appuser:appuser connectors/ ./connectors/
+COPY --chown=appuser:appuser sql/ ./sql/
+COPY --chown=appuser:appuser init_db.py ingest_text.py ingest_remote.py \
+    ingest_job.py embed_chunks.py chunk_pdf.py extract_pdf.py ./
 
 USER appuser
 
