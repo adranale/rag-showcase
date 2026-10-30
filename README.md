@@ -94,6 +94,78 @@ curl -X POST "http://127.0.0.1:8000/chat" \
   -d '{"question":"What is the volunteer handbook policy?","top_k":3}'
 ```
 
+## Azure deployment: architecture, frameworks and processes
+
+This section describes what the `azure-deployment` branch adds on top of the local application. The step-by-step commands follow in "Deploy to Azure".
+
+### Architecture
+
+```mermaid
+flowchart LR
+    user([User]) -->|HTTPS, UI password| ui
+    subgraph rg[Resource group rg-rag-showcase, francecentral]
+        subgraph cae[Container Apps environment + Log Analytics]
+            ui[rag-ui<br/>Streamlit, public<br/>0.5 CPU / 1 GiB]
+            api[rag-api<br/>FastAPI, internal only<br/>1 CPU / 2 GiB]
+        end
+        pg[(PostgreSQL 16 Flexible Server<br/>B1ms + pgvector)]
+        aoai[Azure OpenAI<br/>gpt-4.1-mini, GlobalStandard]
+    end
+    ui -->|HTTPS + X-API-Key| api
+    api -->|SQL over TLS, cosine search| pg
+    api -->|chat completions| aoai
+    gha[GitHub Actions] -.->|OIDC, deploy + ingest| rg
+    ghcr[(ghcr.io image)] -.->|anonymous pull| cae
+```
+
+| Component | Role |
+|---|---|
+| `rag-ui` (Streamlit, `chat_ui.py`) | Only public endpoint. Password login (`APP_PASSWORD`), forwards questions to the API with the shared `X-API-Key`. |
+| `rag-api` (FastAPI, `app/`) | Internal ingress only. Embeds the question locally, runs the pgvector search, calls Azure OpenAI, validates the citations and returns the answer. |
+| PostgreSQL Flexible Server | Stores `documents`, `chunks` and the embeddings (`vector` extension, cosine distance). TLS is required. |
+| Azure OpenAI | Generates the cited JSON answer (`GENERATION_PROVIDER=azure_openai`). |
+| Embeddings | `sentence-transformers` on CPU inside the container image; the model is baked into the image so scale-from-zero does not download it. |
+| Container Apps environment | Hosts both apps (0–1 replicas, scale to zero) and sends logs to Log Analytics. |
+| `ghcr.io/adranale/rag-showcase` | One image for both apps. The UI overrides the start command; the default `CMD` serves FastAPI on `0.0.0.0:8000`. |
+
+### Technical frameworks
+
+| Area | Technology |
+|---|---|
+| Language / API | Python 3.12, FastAPI, Uvicorn, Pydantic |
+| UI | Streamlit |
+| Retrieval | PostgreSQL 16 + pgvector, `sentence-transformers` (CPU torch wheels), psycopg |
+| Generation | Azure OpenAI chat completions (Ollama for local use) |
+| Container | Docker (`python:3.12-slim`, non-root user, `linux/amd64`) |
+| Hosting | Azure Container Apps, Azure Database for PostgreSQL Flexible Server, Azure OpenAI |
+| Automation | PowerShell 7 + Azure CLI (`deploy/azure.ps1`), GitHub Actions with OIDC |
+| Tests | pytest (`tests/test_deploy_script.py` checks the script and workflows without Azure) |
+
+### Request flow
+1. The user logs in to the UI and asks a question.
+2. The UI calls `POST /chat` on the internal API (HTTPS, `X-API-Key`).
+3. The API embeds the question, searches `chunks` (only rows with the current `embedding_model` and `ingestion_status = 'indexed'`) and builds a prompt from the top passages, which are treated as untrusted.
+4. Azure OpenAI returns JSON; the API requires `citation_ids` to be a non-empty subset of the supplied `S<n>` IDs that includes every inline `[S<n>]`, otherwise it answers with an error (502). Insufficient evidence returns no citations.
+5. The UI shows the answer with its sources.
+
+### Processes
+- **Image build** (`build-image.yml`): builds `linux/amd64` on pushes to `main` / `azure-deployment` that touch the app, `Dockerfile`, `requirements.txt` or the workflow, and pushes `ghcr.io/adranale/rag-showcase:<full-commit-sha>`. Deployments use the immutable SHA tag; `latest` only comes from `main`.
+- **Preflight** (`deploy/azure.ps1 -PreflightOnly`): creates nothing. Checks tools, the explicitly given subscription, region, PostgreSQL restriction, names, image pullability and platform, and OpenAI model/SKU quota. `-ProbePostgres` proves PostgreSQL can really be created by creating and deleting a throwaway server.
+- **Provisioning** (`deploy/azure.ps1`, or the `Deploy to Azure` workflow): resource group → PostgreSQL + `VECTOR` extension + database + firewall → Azure OpenAI account and deployment → Container Apps environment → API app (internal) → UI app (public). Generated secrets are saved to `.env.azure` first, never printed, and stored as Container Apps secrets. Every `az` call goes through a helper that adds `--subscription`, uses a safe operation label and redacts secrets in errors.
+- **Ingestion**: `init_db.py` → `ingest_text.py` → `embed_chunks.py` against the database, either from your machine (needs outbound port 5432) or with the `Ingest sample data (Azure)` workflow, which opens a temporary firewall rule for the runner and always removes it.
+- **Authentication to Azure from CI**: OIDC federated credential bound to the `azure-test` GitHub environment, which requires a reviewer's approval for every run. No Azure password is stored in GitHub.
+- **Teardown**: manual only (see Cleanup).
+
+### Lessons from the first deployments
+- PostgreSQL availability is subscription- and region-specific. `az postgres flexible-server list-skus` can report a size as available even though creation fails with `SkuNotAvailable`, and ARM validation does not catch it. This subscription could not create PostgreSQL in `westeurope` or `swedencentral`, which is why the default is `francecentral` and why `-ProbePostgres` exists.
+- Azure OpenAI quota is per model, SKU and region. `gpt-4.1-mini` with `GlobalStandard` had free quota in `francecentral`; `gpt-4o-mini` did not.
+- Azure CLI argument names for `db create` and firewall rules differ between versions; the scripts try both forms.
+- A deleted PostgreSQL server name can stay reserved for a few minutes.
+- Calls such as reading an app FQDN can fail transiently; the script has no retries yet, so a failed run needs the recovery steps below rather than a rerun.
+
+### Known limitations
+Prototype, sample data only, **not production-hardened**: the API uses the database administrator account, PostgreSQL allows all Azure services, secrets are visible as command arguments while `az` runs, there are no budget alerts, the script is not idempotent, and a cold start after idle takes about 30–60 s. The Azure CLI `containerapp exec` command can drop its connection; if it does, use the UI to verify.
+
 ## Deploy to Azure (small test deployment, sample data only)
 
 Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4.1-mini`, GlobalStandard deployment of 10K capacity, i.e. processed in Azure's global pool; default region `francecentral`; override with `-OpenAiModel`/`-OpenAiSku`/`-Location`) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
