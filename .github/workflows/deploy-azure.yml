@@ -108,6 +108,12 @@ jobs:
         shell: pwsh
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue $env:ENV_FILE
+          $sub = '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
           az postgres flexible-server firewall-rule delete `
-            --resource-group $env:RESOURCE_GROUP --name "pg-rag-$env:SUFFIX" `
-            --rule-name allow-my-ip --subscription '${{ secrets.AZURE_SUBSCRIPTION_ID }}' --yes
+            --resource-group $env:RESOURCE_GROUP --server-name "pg-rag-$env:SUFFIX" `
+            --name allow-my-ip --subscription $sub --yes
+          if ($LASTEXITCODE -ne 0) {
+            az postgres flexible-server firewall-rule delete `
+              --resource-group $env:RESOURCE_GROUP --name "pg-rag-$env:SUFFIX" `
+              --rule-name allow-my-ip --subscription $sub --yes
+          }

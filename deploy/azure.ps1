@@ -327,9 +327,17 @@ catch {
     Invoke-Az 'create database (newer CLI argument names)' postgres flexible-server db create `
         --resource-group $ResourceGroup --server-name $pgServer --name rag --output none | Out-Null
 }
-Invoke-Az 'create local ingestion firewall rule' postgres flexible-server firewall-rule create `
-    --resource-group $ResourceGroup --name $pgServer `
-    --rule-name allow-my-ip --start-ip-address $myIp --end-ip-address $myIp --output none | Out-Null
+# Older Azure CLI versions take the server as --name and the rule as --rule-name; newer ones --server-name and --name.
+try {
+    Invoke-Az 'create local ingestion firewall rule' postgres flexible-server firewall-rule create `
+        --resource-group $ResourceGroup --name $pgServer `
+        --rule-name allow-my-ip --start-ip-address $myIp --end-ip-address $myIp --output none | Out-Null
+}
+catch {
+    Invoke-Az 'create local ingestion firewall rule (newer CLI argument names)' postgres flexible-server firewall-rule create `
+        --resource-group $ResourceGroup --server-name $pgServer `
+        --name allow-my-ip --start-ip-address $myIp --end-ip-address $myIp --output none | Out-Null
+}
 
 Write-Host 'Creating Azure OpenAI...'
 Invoke-Az 'create Azure OpenAI account' cognitiveservices account create `
