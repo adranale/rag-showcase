@@ -5,6 +5,8 @@ name: Ingest sample data (Azure)
 # "db-url" secret at run time; nothing is stored in the repo or in GitHub secrets.
 # A temporary firewall rule for this runner's IP is added and always removed again.
 on:
+  push:
+    paths: [".github/workflows/ingest-sample-data.yml"]
   workflow_dispatch:
     inputs:
       suffix:
@@ -26,6 +28,7 @@ concurrency:
 
 jobs:
   ingest:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     environment: azure-test
     env:
