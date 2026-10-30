@@ -311,13 +311,22 @@ Invoke-Az 'create PostgreSQL server' postgres flexible-server create `
     --resource-group $ResourceGroup --name $pgServer --location $Location `
     --admin-user $pgUser --admin-password $pgPassword `
     --sku-name Standard_B1ms --tier Burstable --storage-size 32 --version 16 `
-    --public-access 0.0.0.0 --database-name rag --yes --output none | Out-Null
+    --public-access 0.0.0.0 --yes --output none | Out-Null
 Invoke-Az 'allow-list VECTOR extension' postgres flexible-server parameter set `
     --resource-group $ResourceGroup --server-name $pgServer `
     --name azure.extensions --value VECTOR --output none | Out-Null
 Invoke-Az 'require TLS' postgres flexible-server parameter set `
     --resource-group $ResourceGroup --server-name $pgServer `
     --name require_secure_transport --value on --output none | Out-Null
+# The database argument is --database-name in older Azure CLI versions and --name in newer ones.
+try {
+    Invoke-Az 'create database' postgres flexible-server db create `
+        --resource-group $ResourceGroup --server-name $pgServer --database-name rag --output none | Out-Null
+}
+catch {
+    Invoke-Az 'create database (newer CLI argument names)' postgres flexible-server db create `
+        --resource-group $ResourceGroup --server-name $pgServer --name rag --output none | Out-Null
+}
 Invoke-Az 'create local ingestion firewall rule' postgres flexible-server firewall-rule create `
     --resource-group $ResourceGroup --name $pgServer `
     --rule-name allow-my-ip --start-ip-address $myIp --end-ip-address $myIp --output none | Out-Null
