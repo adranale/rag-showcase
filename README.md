@@ -28,6 +28,7 @@ The application exposes the following endpoints:
 - `app/search.py` — embedding and vector search logic
 - `app/generation.py` — answer generation from retrieved context
 - `data/sample/` — sample documents used for local development
+- `connectors/`, `ingest_remote.py` — Dropbox / Google Drive document sources
 - `tests/` — API and generation tests
 - `evaluation/` — evaluation scripts and result output
 
@@ -60,6 +61,48 @@ Then open:
 - http://127.0.0.1:8000/docs for the FastAPI Swagger UI
 - http://127.0.0.1:8000/health for the health endpoint
 
+## Ingest from Dropbox or Google Drive
+
+`ingest_remote.py` reads TXT, Markdown and PDF files (plus native Google Docs, exported as text) from a Dropbox or Google Drive folder, recursively, and stores them in the same `documents`/`chunks` tables as local files. Run `embed_chunks.py` afterwards. Access is **read-only**; credentials only come from environment variables / `.env` (git-ignored) and are never logged or stored in the database.
+
+```powershell
+python init_db.py                      # applies sql/002_remote_sources.sql (idempotent)
+python ingest_remote.py --provider dropbox --folder /Documents/rag
+python ingest_remote.py --provider google_drive --folder <drive-folder-id>
+python embed_chunks.py
+```
+Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` (allow removals when the remote folder lists no supported files).
+
+**Change tracking.** Each folder is one `source_connections` row (`dropbox` / `google_drive`, identified by the folder). Per file, `documents` stores the remote file ID (`external_file_id`), the remote revision (`source_version`: Dropbox `rev`, Drive `md5Checksum` or `version`), a content hash and `ingestion_status`. A re-run downloads and re-chunks only files whose revision changed or whose last attempt `failed`; if the revision changed but the extracted content did not, only the revision is updated. Files that vanished remotely are **tombstoned** by default: their chunks are deleted (so search never returns them) and the row stays with `ingestion_status = 'removed'` and `removed_at`; a file that reappears is re-ingested. Hard deletion is opt-in. Removals are applied only after the remote listing succeeded, and are skipped when the listing is empty (likely a wrong folder or permissions) unless `--allow-empty` is set. Files that fail to download or parse are marked `failed` (hidden from search) and retried on the next run; the CLI then exits non-zero. Unsupported file types and files over 25 MB are skipped.
+
+### Dropbox setup
+1. Go to the [Dropbox App Console](https://www.dropbox.com/developers/apps) → *Create app* → *Scoped access* → *Full Dropbox* (or *App folder* to restrict to one folder).
+2. Under *Permissions* enable only `files.metadata.read` and `files.content.read`, then *Submit*.
+3. Note the *App key* and *App secret*.
+4. Obtain a long-lived refresh token once: open `https://www.dropbox.com/oauth2/authorize?client_id=<APP_KEY>&response_type=code&token_access_type=offline`, approve, and copy the code. Exchange it (keep the output private):
+   ```powershell
+   curl.exe -u "<APP_KEY>:<APP_SECRET>" -d "code=<CODE>&grant_type=authorization_code" https://api.dropboxapi.com/oauth2/token
+   ```
+   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope).
+
+### Google Drive setup (service account, recommended)
+1. In Google Cloud Console create a project, enable the **Google Drive API**, create a **service account** and add a JSON key (store it securely; never commit it).
+2. In Drive, **share the folder with the service account's e-mail** (Viewer is enough). The scope used is `drive.readonly`; `drive.file` would not see files you shared with it.
+3. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the *content* of the key file. `--folder` is the folder ID (the last part of the folder URL).
+4. Alternative (user OAuth): set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` (refresh token obtained for the `drive.readonly` scope).
+
+### Run from GitHub Actions
+The **Ingest remote documents** workflow (manual *Run workflow*) installs dependencies, runs `init_db.py`, `ingest_remote.py` and `embed_chunks.py` against the Azure database. In GitHub: Settings → Environments → create `remote-ingestion` (add required reviewers) and add these **environment secrets** (only those of the provider you use):
+
+| Secret | Value |
+|---|---|
+| `DATABASE_URL` | PostgreSQL URL of the Azure database (`sslmode=require`) |
+| `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN` | Dropbox app credentials (above) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | full service account key JSON (or the three `GOOGLE_OAUTH_*` secrets) |
+| `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | only for `open_firewall` (same values as the deploy workflow; the OIDC federated credential subject must also cover `environment:remote-ingestion`) |
+
+With `open_firewall` (default) the runner's IP is allowed on server `pg-rag-<suffix>` for the run and removed afterwards; untick it if the database is reachable otherwise. Inputs: `provider`, `folder`, `delete_removed`, `suffix`, `resource_group`. Secrets are passed only as step environment variables and are not echoed.
+
 ## Environment and secrets
 
 This project expects configuration through environment variables or a local `.env` file (git-ignored). Keep secrets out of source control.
@@ -68,7 +111,7 @@ Typical configuration includes:
 
 - database connection settings
 - LLM provider credentials or local model configuration
-- optional cloud connector credentials for Google Drive or Dropbox
+- optional cloud connector credentials for Google Drive or Dropbox (`DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`, `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_REFRESH_TOKEN`; see "Ingest from Dropbox or Google Drive")
 
 ## Data and privacy
 

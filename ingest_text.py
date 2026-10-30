@@ -10,6 +10,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SAMPLE_FOLDER = PROJECT_ROOT / "data" / "sample"
 
 
+def split_paragraphs(text: str) -> list[str]:
+    return [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", text)
+        if paragraph.strip()
+    ]
+
+
 def ingest_file(path: Path):
     text = path.read_text(encoding="utf-8").strip()
 
@@ -19,11 +27,7 @@ def ingest_file(path: Path):
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     external_file_id = path.relative_to(SAMPLE_FOLDER).as_posix()
 
-    paragraphs = [
-        paragraph.strip()
-        for paragraph in re.split(r"\n\s*\n", text)
-        if paragraph.strip()
-    ]
+    paragraphs = split_paragraphs(text)
 
     with get_connection() as conn:
         source = conn.execute(
