@@ -31,7 +31,7 @@ RUN useradd --create-home appuser \
     && chown -R appuser:appuser /home/appuser/.cache
 
 COPY --chown=appuser:appuser app/ ./app/
-COPY --chown=appuser:appuser chat_ui.py .
+COPY --chown=appuser:appuser chat_ui.py idle_stop.py ./
 
 USER appuser
 

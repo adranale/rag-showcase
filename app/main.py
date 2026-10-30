@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
+from app import wake
 from app.db import get_connection
 from app.search import MODEL_NAME, search_documents
 from app.generation import GenerationError, generate_answer
@@ -71,11 +72,11 @@ def ready():
                 """
             ).fetchone()
 
-    except (psycopg.Error, RuntimeError):
+    except (psycopg.Error, RuntimeError) as exc:
         logger.exception("Database readiness check failed")
         raise HTTPException(
             status_code=503,
-            detail="Database unavailable",
+            detail=wake.describe(exc, "Database unavailable"),
         ) from None
 
     if row is None:
@@ -107,11 +108,11 @@ def search(payload: SearchRequest, request: Request):
             detail=str(exc),
         ) from None
 
-    except (psycopg.Error, RuntimeError):
+    except (psycopg.Error, RuntimeError) as exc:
         logger.exception("Search failed")
         raise HTTPException(
             status_code=503,
-            detail="Search is temporarily unavailable",
+            detail=wake.describe(exc, "Search is temporarily unavailable"),
         ) from None
 
     return {
@@ -136,11 +137,11 @@ def chat(payload: SearchRequest, request: Request):
             detail=str(exc),
         ) from None
 
-    except (psycopg.Error, RuntimeError):
+    except (psycopg.Error, RuntimeError) as exc:
         logger.exception("Chat retrieval failed")
         raise HTTPException(
             status_code=503,
-            detail="Search is temporarily unavailable",
+            detail=wake.describe(exc, "Search is temporarily unavailable"),
         ) from None
 
     try:

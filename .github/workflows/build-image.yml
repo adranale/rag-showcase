@@ -6,6 +6,7 @@ on:
     paths:
       - app/**
       - chat_ui.py
+      - idle_stop.py
       - Dockerfile
       - requirements.txt
       - .github/workflows/build-image.yml
