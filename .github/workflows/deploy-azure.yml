@@ -16,7 +16,7 @@ on:
         type: string
       location:
         description: Azure region
-        default: swedencentral
+        default: francecentral
         type: string
       image_sha:
         description: Image tag (commit SHA built by "Build image"); empty = this commit
@@ -25,6 +25,10 @@ on:
       preflight_only:
         description: Only run checks, create nothing
         default: true
+        type: boolean
+      probe_postgres:
+        description: Preflight only - create and delete a throwaway PostgreSQL server to prove it can be provisioned (a few cents)
+        default: false
         type: boolean
 
 permissions:
@@ -66,6 +70,7 @@ jobs:
           -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
           -Suffix $env:SUFFIX -ResourceGroup $env:RESOURCE_GROUP -Location $env:LOCATION
           -Image $env:IMAGE -EnvFile $env:ENV_FILE -PreflightOnly
+          ${{ inputs.probe_postgres && '-ProbePostgres' || '' }}
 
       - name: Provision Azure resources
         if: ${{ !inputs.preflight_only }}

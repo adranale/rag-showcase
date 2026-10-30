@@ -5,7 +5,7 @@
 .DESCRIPTION
     Creates, in ONE explicitly chosen subscription: a resource group, a PostgreSQL
     Flexible Server (Burstable B1ms, pgvector), an Azure OpenAI account with one
-    gpt-4o-mini deployment, and a Container Apps environment with an internal API
+    gpt-4.1-mini deployment, and a Container Apps environment with an internal API
     app and a public, password-protected Streamlit UI app (both scale to zero).
 
     Not idempotent: it refuses to run when .env.azure or any of its resources
@@ -27,15 +27,18 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')][string]$SubscriptionId,
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]{3,10}$')][string]$Suffix,
-    [string]$Location = 'swedencentral',
+    [string]$Location = 'francecentral',
     [ValidatePattern('^[A-Za-z0-9._()-]{1,90}$')][string]$ResourceGroup = 'rg-rag-showcase',
     # Default: the image CI built for the current commit (immutable). Must be public on GHCR.
     [string]$Image = '',
-    [string]$OpenAiModel = 'gpt-4o-mini',
-    [string]$OpenAiModelVersion = '2024-07-18',
-    [ValidateSet('Standard', 'GlobalStandard', 'DataZoneStandard')][string]$OpenAiSku = 'Standard',
+    [string]$OpenAiModel = 'gpt-4.1-mini',
+    [string]$OpenAiModelVersion = '2025-04-14',
+    [ValidateSet('Standard', 'GlobalStandard', 'DataZoneStandard')][string]$OpenAiSku = 'GlobalStandard',
     [int]$OpenAiCapacityK = 10,
     [switch]$PreflightOnly,
+    # Creates and immediately deletes a throwaway PostgreSQL server (a few cents, several minutes)
+    # to prove the subscription can really provision it; Azure's SKU list gives false positives.
+    [switch]$ProbePostgres,
     [switch]$AssumeYes,
     # Where to write the generated credentials (default: .env.azure in the repo root).
     [string]$EnvFile = ''
@@ -184,6 +187,8 @@ catch {
 
 # --- Azure OpenAI availability and quota ----------------------------------
 try {
+    # Azure names the quota of gpt-4.1 models without the dash (OpenAI.GlobalStandard.gpt4.1-mini).
+    $quotaModel = $OpenAiModel -replace '^gpt-4\.1', 'gpt4.1'
     $base = "https://management.azure.com/subscriptions/$SubscriptionId/providers/Microsoft.CognitiveServices/locations/$Location"
     $models = (Invoke-Az 'query model availability' rest --method get --url "$base/models?api-version=2024-10-01" --output json | ConvertFrom-Json).value
     $skus = @($models | Where-Object {
@@ -193,8 +198,8 @@ try {
         $problems.Add("Model $OpenAiModel $OpenAiModelVersion with $OpenAiSku is not listed for $Location. Not switching automatically; choose region/model yourself.")
     }
     $usages = (Invoke-Az 'query model quota' rest --method get --url "$base/usages?api-version=2024-10-01" --output json | ConvertFrom-Json).value
-    $usage = $usages | Where-Object { $_.name.value -eq     "OpenAI.$OpenAiSku.$OpenAiModel" } | Select-Object -First 1
-        if ($null -eq $usage) { $manual.Add("OpenAI quota for $OpenAiSku $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
+    $usage = $usages | Where-Object { $_.name.value -eq "OpenAI.$OpenAiSku.$quotaModel" } | Select-Object -First 1
+    if ($null -eq $usage) { $manual.Add("OpenAI quota for $OpenAiSku $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
     elseif (($usage.limit - $usage.currentValue) -lt $OpenAiCapacityK) {
         $problems.Add("Not enough $OpenAiSku $OpenAiModel quota in $Location (free: $($usage.limit - $usage.currentValue)K, requested: ${OpenAiCapacityK}K).")
     }
@@ -212,6 +217,30 @@ try {
 }
 catch {
     $manual.Add("PostgreSQL region restrictions for $Location could not be queried; verify manually.")
+}
+
+if ($ProbePostgres) {
+    $probeRg = "rg-pgprobe-$(Get-Random -Minimum 100000 -Maximum 999999)"
+    $probePassword = New-Secret 24
+    $script:SecretValues.Add($probePassword)
+    Write-Host "Probing PostgreSQL creation in $Location (temporary resource group $probeRg, deleted afterwards)..."
+    try {
+        Invoke-Az 'create probe resource group' group create --name $probeRg --location $Location --output none | Out-Null
+        Invoke-Az 'create probe PostgreSQL server' postgres flexible-server create `
+            --resource-group $probeRg --name "pgprobe$(Get-Random -Minimum 100000 -Maximum 999999)" --location $Location `
+            --tier Burstable --sku-name Standard_B1ms --storage-size 32 --version 16 `
+            --admin-user probeadmin --admin-password $probePassword `
+            --public-access None --high-availability Disabled --yes --output none | Out-Null
+        Write-Host '  Probe server created successfully.'
+    }
+    catch {
+        $reason = if ("$_" -match 'SkuNotAvailable') { 'SkuNotAvailable (the subscription cannot create Standard_B1ms here)' } else { "$_" }
+        $problems.Add("PostgreSQL probe failed in ${Location}: $reason")
+    }
+    finally {
+        try { Invoke-Az 'delete probe resource group' group delete --name $probeRg --yes --output none | Out-Null }
+        catch { Write-Warning "Could not delete probe resource group $probeRg. Delete it manually to avoid costs." }
+    }
 }
 
 # --- Own public IP for the ingestion firewall rule ------------------------

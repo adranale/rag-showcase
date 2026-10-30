@@ -96,7 +96,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 
 ## Deploy to Azure (small test deployment, sample data only)
 
-Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4o-mini`, Standard (regional) deployment of 10K capacity, default region `swedencentral`; override with `-OpenAiSku`) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
+Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4.1-mini`, GlobalStandard deployment of 10K capacity, i.e. processed in Azure's global pool; default region `francecentral`; override with `-OpenAiModel`/`-OpenAiSku`/`-Location`) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
 
 Commands below use PowerShell 7 (`pwsh`) on macOS (`brew install powershell azure-cli`); run them from the repository root.
 
@@ -109,7 +109,7 @@ az login
 az account list --output table          # pick the NGO subscription ID
 pwsh ./deploy/azure.ps1 -SubscriptionId <subscription-id> -Suffix <unique-lowercase-id> -PreflightOnly
 ```
-Preflight verifies the subscription (name, ID, tenant, resource group and region are shown), tools, region, whether PostgreSQL is restricted for your subscription in that region, resource names, image pullability and `linux/amd64`, and the OpenAI model/SKU (quota is checked when Azure exposes it). Anything it cannot verify is listed as a manual check. It never switches model, region or SKU for you. The script never infers NGO funding from a subscription name: check grant/credit coverage, balance and expiry in Azure billing yourself.
+Preflight verifies the subscription (name, ID, tenant, resource group and region are shown), tools, region, whether PostgreSQL is restricted for your subscription in that region, resource names, image pullability and `linux/amd64`, and the OpenAI model/SKU (quota is checked when Azure exposes it). The default preflight is read-only. Azure's SKU list can report a PostgreSQL size as available even though the subscription cannot create it (`SkuNotAvailable`); add `-ProbePostgres` to create and immediately delete a throwaway server in a temporary resource group (a few cents, several minutes) as a real proof. Anything it cannot verify is listed as a manual check. It never switches model, region or SKU for you. The script never infers NGO funding from a subscription name: check grant/credit coverage, balance and expiry in Azure billing yourself.
 
 ### 3. Provision (creates billable resources)
 ```powershell
@@ -142,7 +142,7 @@ az postgres flexible-server firewall-rule delete --resource-group rg-rag-showcas
   (`/ready` shows `vector_extension` only after `init_db.py` ran.)
 
 ### Deploy from GitHub Actions (alternative to steps 2–4)
-The `Deploy to Azure` workflow (manual *Run workflow*) runs the same script, then initialises the DB and ingests the sample data, then removes the CI firewall rule. It signs in with OIDC (no stored Azure password). `preflight_only` is on by default; untick it to create resources.
+The `Deploy to Azure` workflow (manual *Run workflow*) runs the same script, then initialises the DB and ingests the sample data, then removes the CI firewall rule. It signs in with OIDC (no stored Azure password). `preflight_only` is on by default; untick it to create resources. `probe_postgres` (preflight only) runs the `-ProbePostgres` check.
 
 One-time setup:
 ```powershell
