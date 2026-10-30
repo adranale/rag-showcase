@@ -109,7 +109,7 @@ az login
 az account list --output table          # pick the NGO subscription ID
 pwsh ./deploy/azure.ps1 -SubscriptionId <subscription-id> -Suffix <unique-lowercase-id> -PreflightOnly
 ```
-Preflight verifies the subscription (name, ID, tenant, resource group and region are shown), tools, region, resource names, image pullability and `linux/amd64`, and the OpenAI model/SKU (quota is checked when Azure exposes it). Anything it cannot verify is listed as a manual check. It never switches model, region or SKU for you. The script never infers NGO funding from a subscription name: check grant/credit coverage, balance and expiry in Azure billing yourself.
+Preflight verifies the subscription (name, ID, tenant, resource group and region are shown), tools, region, whether PostgreSQL is restricted for your subscription in that region, resource names, image pullability and `linux/amd64`, and the OpenAI model/SKU (quota is checked when Azure exposes it). Anything it cannot verify is listed as a manual check. It never switches model, region or SKU for you. The script never infers NGO funding from a subscription name: check grant/credit coverage, balance and expiry in Azure billing yourself.
 
 ### 3. Provision (creates billable resources)
 ```powershell
@@ -150,8 +150,9 @@ $sub = '<subscription-id>'
 az ad app create --display-name rag-showcase-github --query appId -o tsv        # -> <client-id>
 az ad sp create --id <client-id>
 az role assignment create --assignee <client-id> --role Contributor --scope /subscriptions/$sub
-az ad app federated-credential create --id <client-id> --parameters '{"name":"github-azure-test","issuer":"https://token.actions.githubusercontent.com","subject":"repo:adranale/rag-showcase:environment:azure-test","audiences":["api://AzureADTokenExchange"]}'
+az ad app federated-credential create --id <client-id> --parameters '{"name":"github-azure-test","issuer":"https://token.actions.githubusercontent.com","subject":"<subject>","audiences":["api://AzureADTokenExchange"]}'
 ```
+`<subject>` is `repo:adranale/rag-showcase:environment:azure-test`. If the login fails with `AADSTS700213` and the error shows a different subject, the repository uses ID-based OIDC claims (`repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:azure-test`): use exactly the subject shown in that error message.
 In GitHub: Settings → Environments → create `azure-test` (add yourself as required reviewer), and add these **environment secrets**:
 
 | Secret | Value |

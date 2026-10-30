@@ -202,6 +202,17 @@ catch {
     $manual.Add("Azure OpenAI model availability/quota could not be queried; check manually before deploying.")
 }
 
+# --- PostgreSQL availability in the region ---------------------------------
+try {
+    $pgCaps = (Invoke-Az 'query PostgreSQL region restrictions' postgres flexible-server list-skus --location $Location --output json | ConvertFrom-Json) | Select-Object -First 1
+    if ($pgCaps.restricted -eq 'Enabled') {
+        $problems.Add("PostgreSQL Flexible Server is restricted for this subscription in $Location ($($pgCaps.reason)) Choose another -Location; not switching automatically.")
+    }
+}
+catch {
+    $manual.Add("PostgreSQL region restrictions for $Location could not be queried; verify manually.")
+}
+
 # --- Own public IP for the ingestion firewall rule ------------------------
 $myIp = (Invoke-RestMethod https://api.ipify.org).ToString().Trim()
 if ($myIp -notmatch '^(\d{1,3}\.){3}\d{1,3}$' -or ($myIp.Split('.') | Where-Object { [int]$_ -gt 255 })) {
