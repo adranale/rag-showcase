@@ -6,6 +6,9 @@ name: Azure ingestion job
 # environment (the same environment as the deploy workflow; add the provider secrets
 # there).
 on:
+  push:
+    branches: [feature/storage-connectors]
+    paths: [.github/workflows/azure-ingest-job.yml]
   workflow_dispatch:
     inputs:
       suffix:
@@ -49,11 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: azure-test
     env:
-      SUFFIX: ${{ inputs.suffix }}
-      PROVIDER: ${{ inputs.provider }}
+      SUFFIX: ${{ inputs.suffix || 'ragdemo01' }}
+      PROVIDER: ${{ inputs.provider || 'dropbox' }}
       FOLDER: ${{ inputs.folder || vars.INGEST_FOLDER }}
       SCHEDULE: ${{ inputs.schedule }}
-      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      RESOURCE_GROUP: ${{ inputs.resource_group || 'rg-rag-showcase' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,4 +83,4 @@ jobs:
           -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX
           -Provider $env:PROVIDER -Folder $env:FOLDER
           -Schedule $env:SCHEDULE -AssumeYes
-          ${{ inputs.start_now && '-StartNow' || '' }}
+          -StartNow
