@@ -44,8 +44,11 @@ jobs:
       RESOURCE_GROUP: ${{ inputs.resource_group }}
       LOCATION: ${{ inputs.location }}
       IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha || github.sha }}
-      ENV_FILE: ${{ runner.temp }}/rag-azure.env
     steps:
+      - name: Set credentials file path
+        shell: bash
+        run: echo "ENV_FILE=$RUNNER_TEMP/rag-azure.env" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - name: Azure login (OIDC)
