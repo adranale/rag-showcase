@@ -8,8 +8,13 @@
     gpt-4.1-mini deployment, and a Container Apps environment with an internal API
     app and a public, password-protected Streamlit UI app (both scale to zero).
 
-    Not idempotent: it refuses to run when .env.azure or any of its resources
-    already exist. To start over, delete the resource group and .env.azure.
+    Safe to re-run (resume mode): existing resources are detected and reused, missing ones
+    are created, and existing credentials are never rotated. Credentials are taken from
+    .env.azure when present, otherwise from the secrets of the existing rag-api app. If the
+    PostgreSQL server exists but its credentials cannot be found, the script stops with
+    recovery steps instead of resetting the password. On a rerun the existing apps are only
+    moved to -Image; their secrets and settings are left unchanged. Transient Azure errors
+    (InternalServerError, throttling, a just-deleted server name still reserved) are retried.
 
     Generated secrets are saved to the git-ignored .env.azure (mode 600 on
     macOS/Linux) BEFORE anything billable is created, and are never printed.
@@ -62,7 +67,18 @@ function Invoke-Az {
     if ($azArgs[0] -notin 'extension', 'version', 'rest' -and 'list-locations' -notin $azArgs) {
         $azArgs += '--subscription', $SubscriptionId
     }
-    $output = & az @azArgs 2>&1
+    $transient = 'InternalServerError|ServiceUnavailable|GatewayTimeout|TooManyRequests|Too Many Requests|Specified server name is already used'
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        $output = & az @azArgs 2>&1
+        if ($LASTEXITCODE -eq 0) { break }
+        $text = ($output | ForEach-Object { "$_" }) -join "`n"
+        if ($attempt -lt 4 -and $text -match $transient) {
+            Write-Host "  transient Azure error during '$label'; retrying in $(20 * $attempt) s..."
+            Start-Sleep -Seconds (20 * $attempt)
+            continue
+        }
+        break
+    }
     if ($LASTEXITCODE -ne 0) {
         $lines = @($output | ForEach-Object { "$_" } | Where-Object { $_.Trim() })
         $errorLines = @($lines | Where-Object { $_ -match '^(ERROR|error:|usage:)|unrecognized|invalid|\(\w+\)' })
@@ -78,6 +94,17 @@ function Assert-Value([string]$Value, [string]$Name, [string]$Pattern = '\S') {
         throw "Azure returned an empty or unexpected value for '$Name'. Stopping before using it."
     }
     $Value
+}
+
+function Test-AzExists {
+    $label, $azArgs = $args
+    try {
+        Invoke-Az $label @azArgs --output none | Out-Null
+        $true
+    }
+    catch {
+        if ("$_" -match 'NotFound|not found|could not be found|does not exist') { $false } else { throw }
+    }
 }
 
 function New-Secret([int]$Length = 32) {
@@ -113,11 +140,6 @@ Write-Host '== Preflight (nothing is created yet) =='
 # --- Local tools -----------------------------------------------------------
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
     throw 'Azure CLI (az) is not installed. macOS: brew install azure-cli'
-}
-if (Test-Path $envFile) {
-    throw ".env.azure already exists. This script is not idempotent and will not overwrite or reuse it. " +
-    'If a previous run failed, its credentials are in that file; delete the resource group from that run ' +
-    "(az group delete --name $ResourceGroup --subscription $SubscriptionId) and then remove .env.azure to start over."
 }
 Invoke-Az 'install/verify az containerapp extension' extension add --name containerapp --only-show-errors | Out-Null
 
@@ -157,15 +179,36 @@ if ($unregistered) {
 $pgServer = "pg-rag-$Suffix"
 $aoaiName = "aoai-rag-$Suffix"
 $envName = 'cae-rag-showcase'
-foreach ($hostName in "$pgServer.postgres.database.azure.com", "$aoaiName.openai.azure.com") {
+$rgExists = (Invoke-Az 'check resource group' group exists --name $ResourceGroup) -eq 'true'
+$found = [ordered]@{}
+foreach ($item in @(
+        @('PostgreSQL server', 'postgres', 'flexible-server', 'show', '--name', $pgServer),
+        @('Azure OpenAI account', 'cognitiveservices', 'account', 'show', '--name', $aoaiName),
+        @('Container Apps environment', 'containerapp', 'env', 'show', '--name', $envName),
+        @('API app', 'containerapp', 'show', '--name', 'rag-api'),
+        @('UI app', 'containerapp', 'show', '--name', 'rag-ui'))) {
+    $itemArgs = $item[1..($item.Count - 1)]
+    $found[$item[0]] = $rgExists -and (Test-AzExists "check existing $($item[0])" @itemArgs --resource-group $ResourceGroup)
+}
+$found['Azure OpenAI deployment'] = $found['Azure OpenAI account'] -and (Test-AzExists 'check existing Azure OpenAI deployment' `
+        cognitiveservices account deployment show --resource-group $ResourceGroup --name $aoaiName --deployment-name $OpenAiModel)
+$pgExists = $found['PostgreSQL server']; $aoaiExists = $found['Azure OpenAI account']
+$resuming = $rgExists -and ($found.Values -contains $true)
+foreach ($pair in @(@($pgServer, $pgExists), @($aoaiName, $aoaiExists))) {
+    $hostName = "$($pair[0])" + $(if ($pair[0] -like 'pg-*') { '.postgres.database.azure.com' } else { '.openai.azure.com' })
+    if ($pair[1]) { continue }
     try {
         [System.Net.Dns]::GetHostAddresses($hostName) | Out-Null
-        $problems.Add("$hostName already resolves: the name is taken. Choose another -Suffix.")
+        $problems.Add("$hostName already resolves and is not in resource group '$ResourceGroup': the name is taken. Choose another -Suffix.")
     }
     catch [System.Net.Sockets.SocketException] { }
 }
-if ((Invoke-Az 'check resource group' group exists --name $ResourceGroup) -eq 'true') {
-    $problems.Add("Resource group '$ResourceGroup' already exists. Use a new -ResourceGroup, or delete it first.")
+if ($resuming) {
+    Write-Host "  Resume mode: existing resources in '$ResourceGroup' are reused, not recreated:"
+    $found.GetEnumerator() | ForEach-Object { Write-Host ("    {0,-28} {1}" -f $_.Key, $(if ($_.Value) { 'exists' } else { 'will be created' })) }
+}
+elseif ($rgExists) {
+    Write-Host "  Resource group '$ResourceGroup' exists but is empty of this deployment's resources; they will be created in it."
 }
 
 # --- Image -----------------------------------------------------------------
@@ -201,7 +244,8 @@ try {
     }
     $usages = (Invoke-Az 'query model quota' rest --method get --url "$base/usages?api-version=2024-10-01" --output json | ConvertFrom-Json).value
     $usage = $usages | Where-Object { $_.name.value -eq "OpenAI.$OpenAiSku.$quotaModel" } | Select-Object -First 1
-    if ($null -eq $usage) { $manual.Add("OpenAI quota for $OpenAiSku $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
+    if ($found['Azure OpenAI deployment']) { }
+    elseif ($null -eq $usage) { $manual.Add("OpenAI quota for $OpenAiSku $OpenAiModel could not be read; check it in the portal (AI Foundry > Quotas).") }
     elseif (($usage.limit - $usage.currentValue) -lt $OpenAiCapacityK) {
         $problems.Add("Not enough $OpenAiSku $OpenAiModel quota in $Location (free: $($usage.limit - $usage.currentValue)K, requested: ${OpenAiCapacityK}K).")
     }
@@ -213,7 +257,7 @@ catch {
 # --- PostgreSQL availability in the region ---------------------------------
 try {
     $pgCaps = (Invoke-Az 'query PostgreSQL region restrictions' postgres flexible-server list-skus --location $Location --output json | ConvertFrom-Json) | Select-Object -First 1
-    if ($pgCaps.restricted -eq 'Enabled') {
+    if (-not $pgExists -and $pgCaps.restricted -eq 'Enabled') {
         $problems.Add("PostgreSQL Flexible Server is restricted for this subscription in $Location ($($pgCaps.reason)) Choose another -Location; not switching automatically.")
     }
 }
@@ -267,35 +311,68 @@ if ($PreflightOnly) { return }
 
 # --- Confirmation and secrets ---------------------------------------------
 if (-not $AssumeYes) {
-    $answer = Read-Host "Create billable resources in subscription '$($sub.name)' ($($sub.id))? Type yes to continue"
+    $what = if ($resuming) { 'Resume this deployment (creates only what is missing, reuses existing credentials)' } else { 'Create billable resources' }
+    $answer = Read-Host "$what in subscription '$($sub.name)' ($($sub.id))? Type yes to continue"
     if ($answer -ne 'yes') { throw 'Aborted by user. Nothing was created.' }
 }
+# The UI password is only needed when the UI app has to be created.
 $appPassword = $env:RAG_UI_PASSWORD
-if (-not $appPassword) {
+if (-not $appPassword -and -not $found['UI app']) {
     $appPassword = Read-Host 'Choose the UI password (8-64 chars: letters, digits and . _ ~ + @ # -)' -AsSecureString |
         ConvertFrom-SecureString -AsPlainText
 }
-if ($appPassword -notmatch '^[A-Za-z0-9._~+@#-]{8,64}$') {
+if (($appPassword -or -not $found['UI app']) -and $appPassword -notmatch '^[A-Za-z0-9._~+@#-]{8,64}$') {
     throw 'UI password is empty or uses unsupported characters/length. Nothing was created.'
 }
 
 $pgUser = 'ragadmin'
-$pgPassword = New-Secret 32
-$apiKey = New-Secret 40
-$script:SecretValues.AddRange([string[]]@($pgPassword, $apiKey, $appPassword))
-$databaseUrl = "postgresql://${pgUser}:${pgPassword}@${pgServer}.postgres.database.azure.com:5432/rag?sslmode=require"
-
-# Persist credentials first so a later failure cannot lose them.
-New-Item -ItemType File -Path $envFile -ErrorAction Stop | Out-Null
-if ($IsWindows) {
-    Write-Warning '.env.azure permissions are not restricted on Windows; protect the file yourself.'
+$databaseUrl = $null
+$apiKey = $null
+$credentialsSaved = $false
+if (Test-Path $envFile) {
+    $saved = @{}
+    Get-Content $envFile | ForEach-Object { $k, $v = $_ -split '=', 2; if ($v) { $saved[$k] = $v } }
+    $databaseUrl = $saved['DATABASE_URL']; $apiKey = $saved['API_KEY']
+    if (-not $appPassword -and $saved['APP_PASSWORD']) { $appPassword = $saved['APP_PASSWORD'] }
+    $credentialsSaved = $true
+    Write-Host "Reusing the credentials from $envFile (not modified)."
+}
+elseif ($found['API app']) {
+    $databaseUrl = Invoke-Az 'read existing database secret' containerapp secret show --resource-group $ResourceGroup --name rag-api --secret-name db-url --show-values --query value --output tsv
+    $apiKey = Invoke-Az 'read existing API key secret' containerapp secret show --resource-group $ResourceGroup --name rag-api --secret-name api-key --show-values --query value --output tsv
+    Write-Host 'Reusing the credentials stored as secrets of the existing rag-api app.'
+}
+elseif ($pgExists) {
+    throw "PostgreSQL server '$pgServer' exists, but its credentials were not found (no $envFile and no rag-api app with a db-url secret). " +
+    'The script will not reset the admin password. Recover: put DATABASE_URL and API_KEY into .env.azure, or delete the resource group ' +
+    "(az group delete --name $ResourceGroup --subscription $SubscriptionId) and start again."
 }
 else {
-    & chmod 600 $envFile
-    if ($LASTEXITCODE -ne 0) { throw 'Could not restrict .env.azure permissions; stopping.' }
+    $databaseUrl = "postgresql://${pgUser}:$(New-Secret 32)@${pgServer}.postgres.database.azure.com:5432/rag?sslmode=require"
+    $apiKey = New-Secret 40
 }
-Set-Content -Path $envFile -Value @("DATABASE_URL=$databaseUrl", "API_KEY=$apiKey", "APP_PASSWORD=$appPassword")
-Write-Host "Credentials saved to $envFile (git-ignored)."
+if ($databaseUrl -notmatch "^postgresql://${pgUser}:([^@]+)@${pgServer}\.postgres\.database\.azure\.com:5432/rag\?sslmode=require$" -or -not $apiKey) {
+    throw "The stored credentials do not match PostgreSQL server '$pgServer' (different -Suffix?) or are incomplete. Stopping before changing anything."
+}
+$pgPassword = $Matches[1]
+$script:SecretValues.AddRange([string[]]@($pgPassword, $databaseUrl, $apiKey))
+if ($appPassword) { $script:SecretValues.Add($appPassword) }
+
+# Persist credentials first so a later failure cannot lose them (never overwrites an existing file).
+if (-not $credentialsSaved) {
+    New-Item -ItemType File -Path $envFile -ErrorAction Stop | Out-Null
+    if ($IsWindows) {
+        Write-Warning '.env.azure permissions are not restricted on Windows; protect the file yourself.'
+    }
+    else {
+        & chmod 600 $envFile
+        if ($LASTEXITCODE -ne 0) { throw 'Could not restrict .env.azure permissions; stopping.' }
+    }
+    $lines = @("DATABASE_URL=$databaseUrl", "API_KEY=$apiKey")
+    if ($appPassword) { $lines += "APP_PASSWORD=$appPassword" }
+    Set-Content -Path $envFile -Value $lines
+    Write-Host "Credentials saved to $envFile (git-ignored)."
+}
 
 # --- Provisioning ----------------------------------------------------------
 foreach ($provider in $unregistered) {
@@ -304,14 +381,25 @@ foreach ($provider in $unregistered) {
 }
 Invoke-Az 'create resource group' group create --name $ResourceGroup --location $Location --output none | Out-Null
 
-Write-Host 'Creating PostgreSQL (takes a few minutes)...'
-# --public-access 0.0.0.0 is Azure's "allow all Azure services" rule: ANY Azure
-# tenant's resources can reach the server (still needs the credentials and TLS).
-Invoke-Az 'create PostgreSQL server' postgres flexible-server create `
-    --resource-group $ResourceGroup --name $pgServer --location $Location `
-    --admin-user $pgUser --admin-password $pgPassword `
-    --sku-name Standard_B1ms --tier Burstable --storage-size 32 --version 16 `
-    --public-access 0.0.0.0 --yes --output none | Out-Null
+if ($pgExists) { Write-Host "PostgreSQL server $pgServer exists; reusing it (credentials unchanged)." }
+else {
+    Write-Host 'Creating PostgreSQL (takes a few minutes)...'
+    # --public-access 0.0.0.0 is Azure's "allow all Azure services" rule: ANY Azure
+    # tenant's resources can reach the server (still needs the credentials and TLS).
+    Invoke-Az 'create PostgreSQL server' postgres flexible-server create `
+        --resource-group $ResourceGroup --name $pgServer --location $Location `
+        --admin-user $pgUser --admin-password $pgPassword `
+        --sku-name Standard_B1ms --tier Burstable --storage-size 32 --version 16 `
+        --public-access 0.0.0.0 --yes --output none | Out-Null
+}
+if ($pgExists) {
+    # With idle auto-stop the server may be stopped; the following steps need it running.
+    $pgState = Invoke-Az 'read PostgreSQL state' postgres flexible-server show --resource-group $ResourceGroup --name $pgServer --query state --output tsv
+    if ($pgState -eq 'Stopped') {
+        Write-Host 'PostgreSQL server is stopped; starting it...'
+        Invoke-Az 'start PostgreSQL server' postgres flexible-server start --resource-group $ResourceGroup --name $pgServer --output none | Out-Null
+    }
+}
 Invoke-Az 'allow-list VECTOR extension' postgres flexible-server parameter set `
     --resource-group $ResourceGroup --server-name $pgServer `
     --name azure.extensions --value VECTOR --output none | Out-Null
@@ -340,13 +428,17 @@ catch {
 }
 
 Write-Host 'Creating Azure OpenAI...'
-Invoke-Az 'create Azure OpenAI account' cognitiveservices account create `
-    --resource-group $ResourceGroup --name $aoaiName --location $Location `
-    --kind OpenAI --sku S0 --custom-domain $aoaiName --yes --output none | Out-Null
-Invoke-Az 'create Azure OpenAI deployment' cognitiveservices account deployment create `
-    --resource-group $ResourceGroup --name $aoaiName --deployment-name $OpenAiModel `
-    --model-name $OpenAiModel --model-version $OpenAiModelVersion --model-format OpenAI `
-    --sku-name $OpenAiSku --sku-capacity $OpenAiCapacityK --output none | Out-Null
+if (-not $aoaiExists) {
+    Invoke-Az 'create Azure OpenAI account' cognitiveservices account create `
+        --resource-group $ResourceGroup --name $aoaiName --location $Location `
+        --kind OpenAI --sku S0 --custom-domain $aoaiName --yes --output none | Out-Null
+}
+if (-not $found['Azure OpenAI deployment']) {
+    Invoke-Az 'create Azure OpenAI deployment' cognitiveservices account deployment create `
+        --resource-group $ResourceGroup --name $aoaiName --deployment-name $OpenAiModel `
+        --model-name $OpenAiModel --model-version $OpenAiModelVersion --model-format OpenAI `
+        --sku-name $OpenAiSku --sku-capacity $OpenAiCapacityK --output none | Out-Null
+}
 $aoaiEndpoint = Assert-Value (Invoke-Az 'read Azure OpenAI endpoint' cognitiveservices account show `
         --resource-group $ResourceGroup --name $aoaiName --query properties.endpoint --output tsv) `
     'Azure OpenAI endpoint' '^https://[a-z0-9-]+\.openai\.azure\.com/?$'
@@ -355,10 +447,18 @@ $aoaiKey = Assert-Value (Invoke-Az 'read Azure OpenAI key' cognitiveservices acc
     'Azure OpenAI key' '^\S{20,}$'
 $script:SecretValues.Add($aoaiKey)
 
-Write-Host 'Creating Container Apps environment...'
-Invoke-Az 'create Container Apps environment' containerapp env create `
-    --resource-group $ResourceGroup --name $envName --location $Location --output none | Out-Null
+if (-not $found['Container Apps environment']) {
+    Write-Host 'Creating Container Apps environment...'
+    Invoke-Az 'create Container Apps environment' containerapp env create `
+        --resource-group $ResourceGroup --name $envName --location $Location --output none | Out-Null
+}
 
+if ($found['API app']) {
+    Write-Host 'API app exists; moving it to the requested image (secrets and settings unchanged)...'
+    Invoke-Az 'update API container app image' containerapp update `
+        --resource-group $ResourceGroup --name rag-api --image $Image --output none | Out-Null
+}
+else {
 Write-Host 'Creating API app (internal, scale to zero)...'
 # The image's default command starts uvicorn on 0.0.0.0:8000.
 Invoke-Az 'create API container app' containerapp create `
@@ -374,11 +474,18 @@ Invoke-Az 'create API container app' containerapp create `
     AZURE_OPENAI_API_KEY=secretref:aoai-key `
     API_KEY=secretref:api-key `
     --output none | Out-Null
+}
 $apiFqdn = Assert-Value (Invoke-Az 'read API FQDN' containerapp show `
         --resource-group $ResourceGroup --name rag-api `
         --query properties.configuration.ingress.fqdn --output tsv) `
     'API FQDN' '^[a-z0-9.-]+\.azurecontainerapps\.io$'
 
+if ($found['UI app']) {
+    Write-Host 'UI app exists; moving it to the requested image (secrets, including the UI password, unchanged)...'
+    Invoke-Az 'update UI container app image' containerapp update `
+        --resource-group $ResourceGroup --name rag-ui --image $Image --output none | Out-Null
+}
+else {
 Write-Host 'Creating UI app (public, scale to zero)...'
 # az parses a space-separated value starting with "-" as an option, and a
 # comma-joined value is passed as ONE argument, so the Streamlit flags are set via
@@ -398,6 +505,7 @@ Invoke-Az 'create UI container app' containerapp create `
     STREAMLIT_SERVER_HEADLESS=true `
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false `
     --output none | Out-Null
+}
 $uiFqdn = Assert-Value (Invoke-Az 'read UI FQDN' containerapp show `
         --resource-group $ResourceGroup --name rag-ui `
         --query properties.configuration.ingress.fqdn --output tsv) `

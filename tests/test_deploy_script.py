@@ -69,3 +69,29 @@ def test_ingest_workflow_masks_secret_and_always_removes_firewall_rule():
     assert "secret show" in text and "db-url" in text
     assert re.search(r"if: \$\{\{ always\(\) \}\}", text)
     assert "firewall-rule delete" in text
+
+
+def test_script_is_resumable_without_rotating_credentials(script_text):
+    assert "Test-AzExists" in script_text
+    assert "not idempotent" not in script_text.lower().replace("not be idempotent", "")
+    # Existing credentials are reused (file, then rag-api secrets); never regenerated
+    # when the server exists, and the file is only created when absent.
+    assert "secret show" in script_text
+    assert "The script will not reset the admin password" in script_text
+    assert "if (-not $credentialsSaved)" in script_text
+    assert "New-Item -ItemType File -Path $envFile -ErrorAction Stop" in script_text
+    assert (
+        "-Force"
+        not in script_text.split("# Persist credentials first")[1].split(
+            "# --- Provisioning"
+        )[0]
+    )
+    # Creation steps are guarded by existence checks.
+    for guard in (
+        "if (-not $aoaiExists)",
+        "if ($pgExists)",
+        "if ($found['API app'])",
+        "if ($found['UI app'])",
+    ):
+        assert guard in script_text
+    assert "Specified server name is already used" in script_text
