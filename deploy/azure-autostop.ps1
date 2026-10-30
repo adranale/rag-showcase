@@ -60,8 +60,8 @@ function Assert-Value([string]$Value, [string]$Name, [string]$Pattern = '\S') {
 }
 
 function Grant-Role([string]$PrincipalId, [string]$Role, [string]$Scope, [string]$Label) {
-    $existing = Invoke-Az "check role $Label" role assignment list --assignee $PrincipalId --role $Role --scope $Scope --query 'length(@)' --output tsv
-    if ($existing -ne '0') { Write-Host "  role already present: $Label"; return }
+    $existing = Invoke-Az "check role $Label" role assignment list --assignee $PrincipalId --role $Role --scope $Scope --query '[].id' --output tsv
+    if ($existing) { Write-Host "  role already present: $Label"; return }
     Invoke-Az "assign role $Label" role assignment create --assignee-object-id $PrincipalId `
         --assignee-principal-type ServicePrincipal --role $Role --scope $Scope --output none | Out-Null
     Write-Host "  role assigned: $Label"
