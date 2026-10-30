@@ -41,7 +41,7 @@ $jobName = 'rag-idle-stop'
 # Runs `az <args>`; $Label is a safe description used in errors (arguments are never printed).
 function Invoke-Az {
     $label, $azArgs = $args
-    $azArgs += '--subscription', $SubscriptionId
+    if ($azArgs[0] -ne 'extension') { $azArgs += '--subscription', $SubscriptionId }
     $output = & az @azArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
         $lines = @($output | ForEach-Object { "$_" } | Where-Object { $_.Trim() })

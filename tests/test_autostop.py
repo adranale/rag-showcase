@@ -176,6 +176,7 @@ def test_autostop_script_requires_subscription():
 
 def test_autostop_script_never_echoes_arguments():
     text = SCRIPT.read_text(encoding="utf-8")
+    assert "if ($azArgs[0] -ne 'extension')" in text
     assert "--args idle_stop.py" in text
     assert "Write-Host $azArgs" not in text
     assert 'throw "Azure CLI step failed: $label' in text
