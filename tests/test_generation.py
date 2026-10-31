@@ -149,3 +149,61 @@ def test_invalid_model_output(monkeypatch, passages):
 
     with pytest.raises(GenerationError):
         generate_answer("Can volunteers claim travel costs?", passages)
+
+
+def test_azure_openai_provider(monkeypatch, passages):
+    monkeypatch.setenv("GENERATION_PROVIDER", "azure_openai")
+    monkeypatch.setenv(
+        "AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/"
+    )
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["headers"] = kwargs["headers"]
+        return httpx.Response(
+            status_code=200,
+            request=httpx.Request("POST", url),
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "answer": "Yes, with a receipt.",
+                                    "citation_ids": ["S1"],
+                                    "insufficient_evidence": False,
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("app.generation.httpx.post", fake_post)
+
+    result = generate_answer("Can volunteers claim travel costs?", passages)
+
+    assert captured["url"].startswith(
+        "https://example.openai.azure.com/openai/deployments/gpt-4o-mini/"
+    )
+    assert captured["headers"] == {"api-key": "test-key"}
+    assert result["citations"][0]["id"] == "S1"
+
+
+def test_azure_openai_requires_configuration(monkeypatch, passages):
+    monkeypatch.setenv("GENERATION_PROVIDER", "azure_openai")
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+
+    with pytest.raises(GenerationError, match="must be configured"):
+        generate_answer("Can volunteers claim travel costs?", passages)
+
+
+def test_unknown_provider(monkeypatch, passages):
+    monkeypatch.setenv("GENERATION_PROVIDER", "nope")
+
+    with pytest.raises(GenerationError, match="Unknown"):
+        generate_answer("Can volunteers claim travel costs?", passages)

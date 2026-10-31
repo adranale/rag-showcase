@@ -51,6 +51,90 @@ Use IDs such as S1 in citation_ids, without square brackets.
 """
 
 
+def _build_messages(question: str, sources: list[dict]) -> list[dict]:
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"question": question, "sources": sources},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+
+def _complete_with_ollama(question: str, sources: list[dict]) -> str:
+    base_url = os.getenv(
+        "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
+    ).rstrip("/")
+    model_name = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+
+    response = httpx.post(
+        f"{base_url}/api/chat",
+        json={
+            "model": model_name,
+            "stream": False,
+            "format": GeneratedAnswer.model_json_schema(),
+            "options": {
+                "temperature": 0,
+                "num_predict": 512,
+            },
+            "messages": _build_messages(question, sources),
+        },
+        timeout=httpx.Timeout(180.0, connect=5.0),
+    )
+    response.raise_for_status()
+
+    body = response.json()
+
+    generation_seconds = body.get("eval_duration", 0) / 1_000_000_000
+    generated_tokens = body.get("eval_count", 0)
+
+    logger.warning(
+        "Ollama timing: total=%.2fs load=%.2fs prompt=%.2fs "
+        "generation=%.2fs tokens=%s tokens_per_second=%.2f",
+        body.get("total_duration", 0) / 1_000_000_000,
+        body.get("load_duration", 0) / 1_000_000_000,
+        body.get("prompt_eval_duration", 0) / 1_000_000_000,
+        generation_seconds,
+        generated_tokens,
+        generated_tokens / generation_seconds
+        if generation_seconds > 0 else 0,
+    )
+
+    return body["message"]["content"]
+
+
+def _complete_with_azure_openai(question: str, sources: list[dict]) -> str:
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+    api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
+
+    if not (endpoint and deployment and api_key):
+        raise GenerationError(
+            "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT and "
+            "AZURE_OPENAI_API_KEY must be configured."
+        )
+
+    response = httpx.post(
+        f"{endpoint}/openai/deployments/{deployment}/chat/completions",
+        params={"api-version": api_version},
+        headers={"api-key": api_key},
+        json={
+            "temperature": 0,
+            "max_tokens": 512,
+            "response_format": {"type": "json_object"},
+            "messages": _build_messages(question, sources),
+        },
+        timeout=httpx.Timeout(60.0, connect=5.0),
+    )
+    response.raise_for_status()
+
+    return response.json()["choices"][0]["message"]["content"]
+
+
 def generate_answer(question: str, passages: list[dict]) -> dict:
     if not passages:
         return {
@@ -69,60 +153,19 @@ def generate_answer(question: str, passages: list[dict]) -> dict:
         for index, passage in enumerate(passages, start=1)
     ]
 
-    base_url = os.getenv(
-        "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
-    ).rstrip("/")
-    model_name = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-
     try:
-        response = httpx.post(
-            f"{base_url}/api/chat",
-            json={
-                "model": model_name,
-                "stream": False,
-                "format": GeneratedAnswer.model_json_schema(),
-                "options": {
-                    "temperature": 0,
-                    "num_predict": 512,
-                },
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "question": question,
-                                "sources": sources,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-            },
-            timeout=httpx.Timeout(180.0, connect=5.0),
-        )
-        response.raise_for_status()
+        provider = os.getenv("GENERATION_PROVIDER", "ollama").lower()
 
-        body = response.json()
+        if provider == "ollama":
+            content = _complete_with_ollama(question, sources)
+        elif provider == "azure_openai":
+            content = _complete_with_azure_openai(question, sources)
+        else:
+            raise GenerationError(
+                f"Unknown GENERATION_PROVIDER: {provider!r}"
+            )
 
-        generation_seconds = body.get("eval_duration", 0) / 1_000_000_000
-        generated_tokens = body.get("eval_count", 0)
-
-        logger.warning(
-            "Ollama timing: total=%.2fs load=%.2fs prompt=%.2fs "
-            "generation=%.2fs tokens=%s tokens_per_second=%.2f",
-            body.get("total_duration", 0) / 1_000_000_000,
-            body.get("load_duration", 0) / 1_000_000_000,
-            body.get("prompt_eval_duration", 0) / 1_000_000_000,
-            generation_seconds,
-            generated_tokens,
-            generated_tokens / generation_seconds
-            if generation_seconds > 0 else 0,
-        )
-
-        generated = GeneratedAnswer.model_validate_json(
-            body["message"]["content"]
-        )
+        generated = GeneratedAnswer.model_validate_json(content)
 
     except httpx.HTTPStatusError as exc:
 
@@ -150,7 +193,7 @@ def generate_answer(question: str, passages: list[dict]) -> dict:
 
         ) from exc
 
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
 
         raise GenerationError(
 

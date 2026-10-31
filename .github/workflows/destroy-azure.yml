@@ -1,0 +1,57 @@
+name: Destroy Azure deployment
+
+# Deletes the WHOLE resource group, including the database and all its data.
+# Protected by the "azure-test" environment (required reviewers) and a typed confirmation.
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: Resource group to delete
+        default: rg-rag-showcase
+        type: string
+      confirm:
+        description: Type the resource group name again to confirm deletion
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-deploy
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      CONFIRM: ${{ inputs.confirm }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Check confirmation
+        shell: bash
+        run: |
+          if [ -z "$RESOURCE_GROUP" ] || [ "$RESOURCE_GROUP" != "$CONFIRM" ]; then
+            echo "Confirmation does not match the resource group name. Nothing deleted."
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete resource group
+        shell: bash
+        run: |
+          if [ "$(az group exists --name "$RESOURCE_GROUP" --subscription "$SUBSCRIPTION_ID")" != "true" ]; then
+            echo "Resource group '$RESOURCE_GROUP' does not exist in the configured subscription. Nothing to delete."
+            exit 0
+          fi
+          echo "Deleting resource group '$RESOURCE_GROUP'..."
+          az group delete --name "$RESOURCE_GROUP" --subscription "$SUBSCRIPTION_ID" --yes
