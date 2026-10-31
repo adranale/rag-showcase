@@ -49,11 +49,20 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Start the PostgreSQL server if it is stopped
-        uses: ./.github/actions/start-postgres
-        with:
-          suffix: ${{ inputs.suffix }}
-          resource-group: ${{ inputs.resource_group }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: pwsh
+        run: |
+          $server = "pg-rag-$env:SUFFIX"
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($LASTEXITCODE -ne 0 -or -not $state) { throw "Could not read the state of $server." }
+          if ($state -eq 'Stopped') {
+            az postgres flexible-server start --resource-group $env:RESOURCE_GROUP `
+              --name $server --subscription $env:SUBSCRIPTION_ID --output none
+            if ($LASTEXITCODE -ne 0) { throw "Could not start $server." }
+          }
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($state -ne 'Ready') { throw "The PostgreSQL server is '$state', not 'Ready'." }
 
       - name: Open firewall for this runner
         shell: pwsh

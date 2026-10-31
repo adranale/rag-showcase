@@ -49,4 +49,4 @@ def test_reset_workflow_requires_confirmation_and_removes_firewall_rule():
     assert "::add-mask::$url" in text
     assert "if: ${{ always()" in text
     assert "firewall-rule delete" in text
-    assert text.index("actions/start-postgres") < text.index("firewall-rule create")
+    assert text.index("flexible-server start") < text.index("firewall-rule create")

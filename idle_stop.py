@@ -1,8 +1,7 @@
 """Stops the PostgreSQL server when the API received no requests for a while.
 
 Runs as a scheduled Container Apps Job with a managed identity.
-Env: POSTGRES_RESOURCE_ID, API_APP_RESOURCE_ID, IDLE_MINUTES (default 30) and the
-optional INGEST_JOB_RESOURCE_ID (the server is kept while that job has a running execution).
+Env: POSTGRES_RESOURCE_ID, API_APP_RESOURCE_ID, IDLE_MINUTES (default 30).
 """
 
 import os
@@ -13,17 +12,10 @@ from app import azure_arm
 METRIC_SLACK_MINUTES = 5
 
 
-def run(
-    server_id: str, app_id: str, idle_minutes: int, ingest_job_id: str = ""
-) -> str:
+def run(server_id: str, app_id: str, idle_minutes: int) -> str:
     state = azure_arm.server_state(server_id)
     if state != "Ready":
         return f"server state is {state}; nothing to do"
-
-    if ingest_job_id:
-        running = azure_arm.running_job_executions(ingest_job_id)
-        if running > 0:
-            return f"{running} ingestion execution(s) running; keeping the server running"
 
     requests = azure_arm.request_count(app_id, idle_minutes)
     if requests > 0:
@@ -44,8 +36,7 @@ def main() -> int:
         server_id = os.environ["POSTGRES_RESOURCE_ID"]
         app_id = os.environ["API_APP_RESOURCE_ID"]
         idle_minutes = int(os.getenv("IDLE_MINUTES", "30"))
-        ingest_job_id = os.getenv("INGEST_JOB_RESOURCE_ID", "").strip()
-        print(run(server_id, app_id, idle_minutes, ingest_job_id))
+        print(run(server_id, app_id, idle_minutes))
     except Exception as exc:  # fail closed: a failed check never stops the server
         print(f"idle check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
