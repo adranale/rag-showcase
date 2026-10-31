@@ -7,7 +7,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "deploy" / "azure.ps1"
 WORKFLOW = (
-    Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build-image.yml"
+    Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build-and-deploy-image.yml"
 )
 
 
