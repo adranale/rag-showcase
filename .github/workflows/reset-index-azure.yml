@@ -48,6 +48,22 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Start the PostgreSQL server if it is stopped
+        shell: pwsh
+        run: |
+          $server = "pg-rag-$env:SUFFIX"
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($LASTEXITCODE -ne 0 -or -not $state) { throw "Could not read the state of $server." }
+          if ($state -eq 'Stopped') {
+            az postgres flexible-server start --resource-group $env:RESOURCE_GROUP `
+              --name $server --subscription $env:SUBSCRIPTION_ID --output none
+            if ($LASTEXITCODE -ne 0) { throw "Could not start $server." }
+          }
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($state -ne 'Ready') { throw "The PostgreSQL server is '$state', not 'Ready'." }
+
       - name: Open firewall for this runner
         shell: pwsh
         run: |
@@ -76,9 +92,6 @@ jobs:
         shell: pwsh
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt extension.dynamic_install_allow_preview=true | Out-Null
-          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
-            --name "pg-rag-$env:SUFFIX" --subscription $env:SUBSCRIPTION_ID --query state --output tsv
-          if ($state -ne 'Ready') { throw "The PostgreSQL server is '$state'; start it first (it stops itself when idle)." }
           $url = az containerapp secret show --resource-group $env:RESOURCE_GROUP --name rag-api `
             --secret-name db-url --subscription $env:SUBSCRIPTION_ID --query value --output tsv
           if ($LASTEXITCODE -ne 0 -or $url -notmatch '^postgres(ql)?://') { throw 'Could not read the db-url secret of rag-api.' }
