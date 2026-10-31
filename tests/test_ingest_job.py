@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import ingest_job
+from connectors.chunking import PipelineChunker
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "deploy" / "azure-ingest-job.ps1"
@@ -57,7 +58,13 @@ def test_service_account_is_decoded_from_base64():
     assert "GOOGLE_SERVICE_ACCOUNT_JSON_B64" not in env
 
 
-def test_invalid_base64_is_rejected():
+def test_text_decoding_falls_back_to_cp1252_and_drops_nul():
+    chunker = PipelineChunker()
+
+    assert chunker._decode("Grüße".encode("cp1252")) == "Grüße"
+    assert chunker._decode("a\x00b".encode()) == "ab"
+    assert chunker._decode(b"\xef\xbb\xbfhello") == "hello"
+
     with pytest.raises(SystemExit):
         ingest_job.decode_service_account({"GOOGLE_SERVICE_ACCOUNT_JSON_B64": "!!"})
 
@@ -83,7 +90,7 @@ def test_main_runs_three_steps_in_order(monkeypatch):
     ]
 
 
-def test_main_stops_after_failed_step(monkeypatch):
+def test_main_embeds_after_partial_ingest_failure(monkeypatch):
     calls = []
 
     def fake_run(command, env, check):
@@ -99,7 +106,26 @@ def test_main_stops_after_failed_step(monkeypatch):
         ingest_job.main()
 
     assert exc.value.code == 3
-    assert "embed_chunks.py" not in calls
+    assert calls == ["init_db.py", "ingest_remote.py", "embed_chunks.py"]
+
+
+def test_main_stops_when_schema_setup_fails(monkeypatch):
+    calls = []
+
+    def fake_run(command, env, check):
+        calls.append(command[1])
+        return subprocess.CompletedProcess(command, 2)
+
+    monkeypatch.setenv("PROVIDER", "dropbox")
+    monkeypatch.setenv("FOLDER", "/")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:x@h/db")
+    monkeypatch.setattr(ingest_job.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        ingest_job.main()
+
+    assert exc.value.code == 2
+    assert calls == ["init_db.py"]
 
 
 def test_main_requires_database_url(monkeypatch):
