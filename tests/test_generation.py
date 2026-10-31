@@ -114,6 +114,39 @@ def test_insufficient_evidence(monkeypatch, passages):
     assert result["citations"] == []
 
 
+def test_insufficient_evidence_with_empty_answer_and_extra_key(
+    monkeypatch, passages
+):
+    mock_ollama(
+        monkeypatch,
+        {
+            "answer": "",
+            "explanation": "The sources do not mention this.",
+            "citation_ids": [],
+            "insufficient_evidence": True,
+        },
+    )
+
+    result = generate_answer("Unrelated question?", passages)
+
+    assert result["insufficient_evidence"] is True
+    assert result["citations"] == []
+
+
+def test_supported_answer_must_not_be_empty(monkeypatch, passages):
+    mock_ollama(
+        monkeypatch,
+        {
+            "answer": "",
+            "citation_ids": ["S1"],
+            "insufficient_evidence": False,
+        },
+    )
+
+    with pytest.raises(GenerationError):
+        generate_answer("Can volunteers claim travel costs?", passages)
+
+
 def test_no_passages_does_not_call_ollama(monkeypatch):
     def unexpected_call(*args, **kwargs):
         pytest.fail("Ollama must not be called when no passages exist.")
