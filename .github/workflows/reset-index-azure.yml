@@ -6,6 +6,9 @@ name: Reset index (Azure)
 # Type RESET in the confirm input. A temporary firewall rule for this runner's IP is
 # added and always removed again; the connection string comes from the rag-api secret.
 on:
+  push:
+    branches: [feature/storage-connectors]
+    paths: [.github/workflows/reset-index-azure.yml]
   workflow_dispatch:
     inputs:
       confirm:
