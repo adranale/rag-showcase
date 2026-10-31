@@ -38,7 +38,7 @@ def test_dropbox_lists_filters_and_paginates():
                             "size": 10,
                             "path_display": "/docs/a.md",
                         },
-                        {".tag": "file", "name": "x.png", "id": "id:x", "rev": "r"},
+                        {".tag": "file", "name": "x.exe", "id": "id:x", "rev": "r"},
                     ],
                     "has_more": True,
                     "cursor": "c1",

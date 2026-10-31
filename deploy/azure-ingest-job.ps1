@@ -157,6 +157,20 @@ $databaseUrl = Assert-Value (Invoke-Az 'read rag-api db-url secret' containerapp
         --query value --output tsv) 'DATABASE_URL secret' '^postgresql://\S+$'
 $script:SecretValues.Add($databaseUrl)
 
+# Optional OCR: used when the Document Intelligence account from deploy/azure-ocr.ps1 exists.
+$docIntelName = "di-rag-$Suffix"
+$docIntelEndpoint = ''
+$docIntelKey = ''
+$docIntelFound = Invoke-Az 'check for Document Intelligence account' cognitiveservices account list `
+    --resource-group $ResourceGroup --query "[?name=='$docIntelName'].name" --output tsv
+if ($docIntelFound -eq $docIntelName) {
+    $docIntelEndpoint = Assert-Value (Invoke-Az 'read Document Intelligence endpoint' cognitiveservices account show `
+            --resource-group $ResourceGroup --name $docIntelName --query properties.endpoint --output tsv) 'Document Intelligence endpoint' '^https://\S+$'
+    $docIntelKey = Assert-Value (Invoke-Az 'read Document Intelligence key' cognitiveservices account keys list `
+            --resource-group $ResourceGroup --name $docIntelName --query key1 --output tsv) 'Document Intelligence key'
+    $script:SecretValues.Add($docIntelKey)
+}
+
 $existing = Invoke-Az 'check for existing job' containerapp job list `
     --resource-group $ResourceGroup --query "[?name=='$jobName'].name" --output tsv
 $jobExists = $existing -eq $jobName
@@ -178,6 +192,7 @@ Write-Host "  Environment:     $EnvironmentName"
 Write-Host "  Job:             $jobName ($(if ($jobExists) { 'update' } else { 'create' }), trigger $triggerType$(if ($Schedule) { " '$Schedule' UTC" }))"
 Write-Host "  Image:           $Image"
 Write-Host "  Provider/folder: $Provider  $Folder"
+Write-Host "  OCR:             $(if ($docIntelKey) { "enabled ($docIntelName)" } else { 'not configured (scanned PDFs and images will fail)' })"
 Write-Host '  Credentials:     found in environment (not printed)'
 Write-Host ''
 if (-not $AssumeYes) {
@@ -190,6 +205,11 @@ $secretArgs = @("db-url=$databaseUrl")
 $envArgs = @("PROVIDER=$Provider", "FOLDER=$Folder", 'DATABASE_URL=secretref:db-url')
 if ($DeleteRemoved) { $envArgs += 'DELETE_REMOVED=true' }
 $secretNames = @('db-url')
+if ($docIntelKey) {
+    $secretArgs += "docintel-key=$docIntelKey"
+    $envArgs += "DOCINTEL_ENDPOINT=$docIntelEndpoint", 'DOCINTEL_KEY=secretref:docintel-key'
+    $secretNames += 'docintel-key'
+}
 foreach ($name in $credentialMap.Keys) {
     $secretName = $name.ToLowerInvariant().Replace('_', '-')
     $secretNames += $secretName
