@@ -123,6 +123,7 @@ Delete the job (credentials stored in it go away with it): `az containerapp job 
 ### Change the Dropbox folder or reset the index (Azure)
 - **Change the folder:** set the `azure-test` variable `INGEST_FOLDER` (or type the folder when starting the workflow) and run **Azure ingestion job** again. Each folder is its own source; documents of the old folder stay indexed.
 - **Reset:** the manual workflow **Reset index (Azure)** (`reset-index-azure.yml`, environment `azure-test`) deletes **all** documents, chunks, embeddings and source connections (`TRUNCATE`; the schema stays, `init_db.py` re-creates the default local source). It only runs when `confirm` is exactly `RESET`, starts the database if auto-stop had stopped it, opens a temporary firewall rule for the runner and always removes it. The sample documents are deleted too: afterwards run **Ingest sample data (Azure)** and/or **Azure ingestion job**. There is no undo. Locally (Docker) use `reset_index.sh`.
+- **Diagnose:** the manual, read-only workflow **Azure diagnose** (`azure-diagnose.yml`, environment `azure-test`) runs `diagnose.py` inside Azure as a one-off run of the `rag-ingest` job (the job must exist). Given a `query` it prints document counts by status, failed file names, chunk/embedding counts, files whose title or text contain the query, and the top semantic hits with scores. It never prints document text. Use it to tell "not indexed" from "not retrieved".
 
 ## Environment and secrets
 

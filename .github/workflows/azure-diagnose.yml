@@ -1,0 +1,105 @@
+name: Azure diagnose
+
+# Manual, read-only. Runs diagnose.py INSIDE Azure as a one-off run of the "rag-ingest"
+# job (no firewall rule, no image rebuild) and prints document/chunk counts, files whose
+# title or text contain "query" and the top semantic hits. Only names and scores are
+# printed, never document text. Needs the ingestion job to exist (Azure ingestion job).
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: Question or search term to look for
+        required: true
+        type: string
+      suffix:
+        description: Deployment suffix (empty = AZURE_SUFFIX variable)
+        default: ""
+        type: string
+      resource_group:
+        description: Resource group of the deployment
+        default: rg-rag-showcase
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-diagnose
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      SUFFIX: ${{ inputs.suffix || vars.AZURE_SUFFIX }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Start the PostgreSQL server if it is stopped
+        shell: pwsh
+        run: |
+          if ($env:SUFFIX -notmatch '^[a-z0-9]{3,10}$') { throw 'Set the suffix input or the AZURE_SUFFIX variable (3-10 chars a-z0-9).' }
+          $server = "pg-rag-$env:SUFFIX"
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($LASTEXITCODE -ne 0 -or -not $state) { throw "Could not read the state of $server." }
+          if ($state -eq 'Stopped') {
+            az postgres flexible-server start --resource-group $env:RESOURCE_GROUP `
+              --name $server --subscription $env:SUBSCRIPTION_ID --output none
+            if ($LASTEXITCODE -ne 0) { throw "Could not start $server." }
+          }
+          $state = az postgres flexible-server show --resource-group $env:RESOURCE_GROUP `
+            --name $server --subscription $env:SUBSCRIPTION_ID --query state --output tsv
+          if ($state -ne 'Ready') { throw "The PostgreSQL server is '$state', not 'Ready'." }
+      - name: Run the diagnostics inside Azure
+        shell: pwsh
+        env:
+          DIAG_QUERY: ${{ inputs.query }}
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt extension.dynamic_install_allow_preview=true | Out-Null
+          $sub = $env:SUBSCRIPTION_ID; $rg = $env:RESOURCE_GROUP
+          $script = [Convert]::ToBase64String([IO.File]::ReadAllBytes('diagnose.py'))
+          # No commas or spaces, so the one-liner survives the az argument parsing.
+          $code = "exec(__import__('base64').b64decode(__import__('os').environ['DIAG_B64']))"
+          $img = az containerapp job show --resource-group $rg --name rag-ingest --subscription $sub `
+            --query 'properties.template.containers[0].image' --output tsv
+          if ($LASTEXITCODE -ne 0 -or -not $img) { throw 'Could not read the rag-ingest image.' }
+          $exec = az containerapp job start --resource-group $rg --name rag-ingest --subscription $sub `
+            --image $img --command python "--args=-c$code" `
+            --env-vars "DATABASE_URL=secretref:db-url" "DIAG_B64=$script" "DIAG_QUERY=$env:DIAG_QUERY" --query name --output tsv
+          if ($LASTEXITCODE -ne 0 -or -not $exec) { throw 'Could not start the diagnostic run.' }
+          Write-Host "Execution: $exec"
+          $status = 'Running'
+          for ($i = 0; $i -lt 40 -and $status -eq 'Running'; $i++) {
+            Start-Sleep 15
+            $status = az containerapp job execution show --resource-group $rg --name rag-ingest `
+              --job-execution-name $exec --subscription $sub --query properties.status --output tsv
+          }
+          Write-Host "Status: $status"
+          $envName = az containerapp job show --resource-group $rg --name rag-ingest --subscription $sub `
+            --query 'properties.environmentId' --output tsv
+          $ws = az containerapp env show --ids $envName --query 'properties.appLogsConfiguration.logAnalyticsConfiguration.customerId' --output tsv
+          if (-not $ws) { throw 'Could not find the Log Analytics workspace.' }
+          $body = @{ query = "ContainerAppConsoleLogs_CL | where ContainerJobName_s == 'rag-ingest' and ContainerGroupName_s startswith '$exec' | order by TimeGenerated asc | project Log_s" } | ConvertTo-Json -Compress
+          Set-Content -Path "$env:RUNNER_TEMP/q.json" -Value $body
+          # Console logs reach Log Analytics a few minutes after the run.
+          for ($i = 0; $i -lt 12; $i++) {
+            $rows = az rest --method post --url "https://api.loganalytics.io/v1/workspaces/$ws/query" `
+              --resource https://api.loganalytics.io --body "@$env:RUNNER_TEMP/q.json" --query 'tables[0].rows[*][0]' --output tsv
+            if ($rows) { break }
+            Start-Sleep 30
+          }
+          if (-not $rows) { throw 'No log lines arrived yet; read them in the portal (rag-ingest, execution history).' }
+          $rows
+          if ($status -ne 'Succeeded') { throw "Diagnostic run ended with status $status." }
