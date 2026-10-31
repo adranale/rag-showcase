@@ -1,0 +1,143 @@
+name: Azure operations
+
+# Manual trigger only. One entry point for the routine jobs on an existing deployment:
+#   autostop-setup - create/update the idle auto-stop job "rag-idle-stop" (managed
+#                    identities and role assignments) with the image rag-api runs now.
+#                    Needs the CI identity to hold "Role Based Access Control
+#                    Administrator" on the resource group.
+#   ingest-job     - create/update the "rag-ingest" Container Apps Job and optionally
+#                    start it (Dropbox / Google Drive + embedding run INSIDE Azure).
+#                    Provider credentials come from secrets of the "azure-test"
+#                    environment. The database is started first if auto-stop stopped it.
+# Destructive workflows (Reset index, Destroy) and the initial deployment stay separate.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        required: true
+        type: choice
+        options:
+          - ingest-job
+          - autostop-setup
+      suffix:
+        description: Deployment suffix (empty = AZURE_SUFFIX variable)
+        default: ""
+        type: string
+      resource_group:
+        description: Resource group of the deployment
+        default: rg-rag-showcase
+        type: string
+      provider:
+        description: "ingest-job: document source"
+        type: choice
+        default: dropbox
+        options:
+          - dropbox
+          - google_drive
+      folder:
+        description: "ingest-job: Dropbox folder path or Google Drive folder ID; empty = INGEST_FOLDER variable"
+        default: ""
+        type: string
+      schedule:
+        description: "ingest-job: cron expression in UTC (5 fields); empty = manual trigger only"
+        default: ""
+        type: string
+      start_now:
+        description: "ingest-job: start an execution right away"
+        default: true
+        type: boolean
+      enable_ocr:
+        description: "ingest-job: create the Document Intelligence account for OCR if missing (BILLABLE per page, no monetary cap)"
+        default: true
+        type: boolean
+      idle_minutes:
+        description: "autostop-setup: stop PostgreSQL after this many minutes without API requests"
+        default: "30"
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-operations
+  cancel-in-progress: false
+
+jobs:
+  operation:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      SUFFIX: ${{ inputs.suffix || vars.AZURE_SUFFIX }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check the suffix
+        shell: pwsh
+        run: |
+          if ($env:SUFFIX -notmatch '^[a-z0-9]{3,10}$') { throw 'Set the suffix input or the AZURE_SUFFIX variable (3-10 chars a-z0-9).' }
+
+      # --- autostop-setup ---
+      - name: Create or update the auto-stop
+        if: ${{ inputs.action == 'autostop-setup' }}
+        shell: pwsh
+        env:
+          IDLE_MINUTES: ${{ inputs.idle_minutes }}
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt extension.dynamic_install_allow_preview=true | Out-Null
+          # Same image as the deployed API, so the job and the API run the same code.
+          $image = az containerapp show --resource-group $env:RESOURCE_GROUP --name rag-api `
+            --subscription $env:SUBSCRIPTION_ID --query 'properties.template.containers[0].image' --output tsv
+          if ($LASTEXITCODE -ne 0 -or $image -notmatch '^ghcr\.io/\S+$') { throw 'Could not read the rag-api image.' }
+          ./deploy/azure-autostop.ps1 -SubscriptionId $env:SUBSCRIPTION_ID `
+            -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX `
+            -Image $image -IdleMinutes ([int]$env:IDLE_MINUTES) -AssumeYes
+
+      # --- ingest-job ---
+      - name: Start the PostgreSQL server if it is stopped
+        if: ${{ inputs.action == 'ingest-job' }}
+        uses: ./.github/actions/start-postgres
+        with:
+          suffix: ${{ env.SUFFIX }}
+          resource-group: ${{ inputs.resource_group }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create the OCR account (billable, only when requested)
+        if: ${{ inputs.action == 'ingest-job' && inputs.enable_ocr }}
+        shell: pwsh
+        run: >
+          ./deploy/azure-ocr.ps1
+          -SubscriptionId $env:SUBSCRIPTION_ID
+          -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX -AssumeYes
+
+      - name: Create or update the ingestion job
+        if: ${{ inputs.action == 'ingest-job' }}
+        shell: pwsh
+        env:
+          PROVIDER: ${{ inputs.provider }}
+          FOLDER: ${{ inputs.folder || vars.INGEST_FOLDER }}
+          SCHEDULE: ${{ inputs.schedule }}
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+        run: >
+          ./deploy/azure-ingest-job.ps1
+          -SubscriptionId $env:SUBSCRIPTION_ID
+          -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX
+          -Provider $env:PROVIDER -Folder $env:FOLDER
+          -Schedule $env:SCHEDULE -AssumeYes
+          ${{ inputs.start_now && '-StartNow' || '' }}
