@@ -2,11 +2,13 @@ name: Build image
 
 on:
   push:
-    branches: [main, azure-deployment]
+    branches: [main, azure-deployment, feature/storage-connectors]
     paths:
       - app/**
       - chat_ui.py
-      - idle_stop.py
+      - connectors/**
+      - sql/**
+      - "*.py"
       - Dockerfile
       - requirements.txt
       - .github/workflows/build-image.yml
