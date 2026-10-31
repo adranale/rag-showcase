@@ -11,7 +11,8 @@
       * creates the scheduled Container Apps Job 'rag-idle-stop' (managed identity) that
         stops the server when rag-api received no requests for -IdleMinutes.
     The managed identities get Contributor on the PostgreSQL server only, and the job
-    Monitoring Reader on rag-api. Creating role assignments needs Owner or User Access
+    Monitoring Reader on rag-api and Reader on the resource group (to see running ingestion
+    executions; the server is kept while rag-ingest runs). Creating role assignments needs Owner or User Access
     Administrator (or Role Based Access Control Administrator) for the identity running this
     script; Contributor alone is not enough.
 
@@ -60,7 +61,7 @@ function Assert-Value([string]$Value, [string]$Name, [string]$Pattern = '\S') {
 }
 
 function Grant-Role([string]$PrincipalId, [string]$Role, [string]$Scope, [string]$Label) {
-    $existing = Invoke-Az "check role $Label" role assignment list --assignee $PrincipalId --role $Role --scope $Scope --query '[].id' --output tsv
+    $existing = Invoke-Az "check role $Label" role assignment list --assignee-object-id $PrincipalId --role $Role --scope $Scope --query '[].id' --output tsv
     if ($existing) { Write-Host "  role already present: $Label"; return }
     Invoke-Az "assign role $Label" role assignment create --assignee-object-id $PrincipalId `
         --assignee-principal-type ServicePrincipal --role $Role --scope $Scope --output none | Out-Null
@@ -108,7 +109,9 @@ Invoke-Az 'update API app' containerapp update --resource-group $ResourceGroup -
     --image $Image --set-env-vars "POSTGRES_RESOURCE_ID=$pgId" --output none | Out-Null
 
 Write-Host "Creating or updating job $jobName..."
-$envVars = @("POSTGRES_RESOURCE_ID=$pgId", "API_APP_RESOURCE_ID=$appId", "IDLE_MINUTES=$IdleMinutes")
+$groupId = ($pgId -split '/providers/')[0]
+$ingestJobId = "$groupId/providers/Microsoft.App/jobs/rag-ingest"
+$envVars = @("POSTGRES_RESOURCE_ID=$pgId", "API_APP_RESOURCE_ID=$appId", "IDLE_MINUTES=$IdleMinutes", "INGEST_JOB_RESOURCE_ID=$ingestJobId")
 $jobExists = $true
 try { Invoke-Az 'check idle-stop job' containerapp job show --resource-group $ResourceGroup --name $jobName --output none | Out-Null }
 catch { $jobExists = $false }
@@ -128,6 +131,7 @@ $jobPrincipal = Assert-Value (Invoke-Az 'read job identity' containerapp job sho
         --query identity.principalId --output tsv) 'job identity' '^[0-9a-f-]{36}$'
 Grant-Role $jobPrincipal 'Contributor' $pgId 'job -> PostgreSQL server'
 Grant-Role $jobPrincipal 'Monitoring Reader' $appId 'job -> rag-api metrics'
+Grant-Role $jobPrincipal 'Reader' $groupId 'job -> resource group (detect a running ingestion)'
 
 Write-Host ''
 Write-Host 'Done. Role assignments can take a few minutes to take effect.'
