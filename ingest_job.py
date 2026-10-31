@@ -59,11 +59,20 @@ def main() -> None:
         build_ingest_command(env),
         [sys.executable, "embed_chunks.py"],
     ]
+    ingest_code = 0
     for step in steps:
         print(f"== {step[1]}", flush=True)
         result = subprocess.run(step, env=env, check=False)
-        if result.returncode != 0:
-            raise SystemExit(result.returncode)
+        if result.returncode == 0:
+            continue
+        if step[1] == "ingest_remote.py":
+            # Files that failed are retried on the next run; the files that were
+            # ingested must still be embedded, otherwise search finds nothing.
+            ingest_code = result.returncode
+            continue
+        raise SystemExit(result.returncode)
+    if ingest_code:
+        raise SystemExit(ingest_code)
 
 
 if __name__ == "__main__":

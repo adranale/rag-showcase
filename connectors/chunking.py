@@ -60,8 +60,16 @@ class PipelineChunker:
             return self._chunk_pdf(data)
         return self._chunk_text(data)
 
+    def _decode(self, data: bytes) -> str:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("cp1252", errors="replace")
+        # PostgreSQL text columns reject NUL characters.
+        return text.replace("\x00", "")
+
     def _chunk_text(self, data: bytes) -> ChunkedDocument:
-        text = data.decode("utf-8-sig").strip()
+        text = self._decode(data).strip()
         if not text:
             raise ValueError("Document is empty.")
         self._load()
@@ -92,7 +100,7 @@ class PipelineChunker:
         self._load()
         chunks = []
         for page_number, page in enumerate(reader.pages, start=1):
-            text = (page.extract_text() or "").strip()
+            text = (page.extract_text() or "").replace("\x00", "").strip()
             if not text:
                 continue
             for part in self._windows(text):
