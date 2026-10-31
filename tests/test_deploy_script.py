@@ -62,13 +62,12 @@ def test_workflow_builds_amd64_and_tags_latest_only_on_default_branch():
     assert "is_default_branch" in text
 
 
-def test_ingest_workflow_masks_secret_and_always_removes_firewall_rule():
-    text = (WORKFLOW.parent / "ingest-sample-data.yml").read_text(encoding="utf-8")
+def test_azure_operations_workflow_dispatches_both_actions():
+    text = (WORKFLOW.parent / "azure-operations.yml").read_text(encoding="utf-8")
 
-    assert "::add-mask::$url" in text
-    assert "secret show" in text and "db-url" in text
-    assert re.search(r"if: \$\{\{ always\(\) \}\}", text)
-    assert "firewall-rule delete" in text
+    assert "autostop-setup" in text and "ingest-job" in text
+    assert "./.github/actions/start-postgres" in text
+    assert (WORKFLOW.parents[1] / "actions/start-postgres/action.yml").exists()
 
 
 def test_script_is_resumable_without_rotating_credentials(script_text):
