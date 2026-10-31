@@ -117,6 +117,11 @@ az monitor log-analytics query --workspace <workspace-customer-id> --analytics-q
 ```
 
 Delete the job (credentials stored in it go away with it): `az containerapp job delete --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --yes`.
+
+### Change the Dropbox folder or reset the index (Azure)
+- **Change the folder:** set the `azure-test` variable `INGEST_FOLDER` (or type the folder when starting the workflow) and run **Azure ingestion job** again. Each folder is its own source; documents of the old folder stay indexed.
+- **Reset:** the manual workflow **Reset index (Azure)** (`reset-index-azure.yml`, environment `azure-test`) deletes **all** documents, chunks, embeddings and source connections (`TRUNCATE`; the schema stays, `init_db.py` re-creates the default local source). It only runs when `confirm` is exactly `RESET`, needs a running database (start it first), opens a temporary firewall rule for the runner and always removes it. The sample documents are deleted too: afterwards run **Ingest sample data (Azure)** and/or **Azure ingestion job**. There is no undo. Locally (Docker) use `reset_index.sh`.
+
 ## Environment and secrets
 
 This project expects configuration through environment variables or a local `.env` file (git-ignored). Keep secrets out of source control.
