@@ -8,6 +8,7 @@ import httpx
 ARM = "https://management.azure.com"
 SERVER_API_VERSION = "2024-08-01"
 METRICS_API_VERSION = "2018-01-01"
+JOBS_API_VERSION = "2024-03-01"
 
 
 def _token() -> str:
@@ -97,3 +98,18 @@ def uptime_minutes(server_id: str, minutes: int) -> int:
         for series in metric.get("timeseries", []):
             points += sum(1 for p in series.get("data", []) if p.get("average") is not None)
     return points
+
+
+def running_job_executions(job_id: str) -> int:
+    """Executions of a Container Apps Job that are currently running (0 if the job does not exist)."""
+    try:
+        body = _call("GET", job_id, "/executions", {"api-version": JOBS_API_VERSION}).json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return 0
+        raise
+    return sum(
+        1
+        for execution in body.get("value", [])
+        if execution.get("properties", {}).get("status") == "Running"
+    )

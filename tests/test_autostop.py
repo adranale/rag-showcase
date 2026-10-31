@@ -125,6 +125,71 @@ def test_idle_stop_never_stops_when_check_fails(monkeypatch, capsys):
     assert "idle check failed" in capsys.readouterr().err
 
 
+def test_idle_stop_keeps_server_while_ingestion_runs(monkeypatch):
+    stopped = []
+    monkeypatch.setattr(azure_arm, "server_state", lambda _id: "Ready")
+    monkeypatch.setattr(azure_arm, "running_job_executions", lambda _id: 1)
+    monkeypatch.setattr(azure_arm, "request_count", lambda _id, _m: 0)
+    monkeypatch.setattr(azure_arm, "uptime_minutes", lambda _id, _m: 60)
+    monkeypatch.setattr(azure_arm, "stop_server", lambda _id: stopped.append(_id))
+
+    message = idle_stop.run(SERVER, APP, 30, "/job")
+
+    assert not stopped
+    assert "ingestion" in message
+
+
+def test_idle_stop_ignores_ingestion_check_when_not_configured(monkeypatch):
+    stopped = []
+    monkeypatch.setattr(azure_arm, "server_state", lambda _id: "Ready")
+    monkeypatch.setattr(
+        azure_arm, "running_job_executions", lambda _id: pytest.fail("not configured")
+    )
+    monkeypatch.setattr(azure_arm, "request_count", lambda _id, _m: 0)
+    monkeypatch.setattr(azure_arm, "uptime_minutes", lambda _id, _m: 60)
+    monkeypatch.setattr(azure_arm, "stop_server", lambda _id: stopped.append(_id))
+
+    idle_stop.run(SERVER, APP, 30)
+
+    assert stopped
+
+
+def test_idle_stop_fails_closed_when_job_lookup_fails(monkeypatch):
+    stopped = []
+    monkeypatch.setenv("POSTGRES_RESOURCE_ID", SERVER)
+    monkeypatch.setenv("API_APP_RESOURCE_ID", APP)
+    monkeypatch.setenv("INGEST_JOB_RESOURCE_ID", "/job")
+    monkeypatch.setattr(azure_arm, "server_state", lambda _id: "Ready")
+
+    def forbidden(_id):
+        raise httpx.ConnectError("no access")
+
+    monkeypatch.setattr(azure_arm, "running_job_executions", forbidden)
+    monkeypatch.setattr(azure_arm, "stop_server", lambda _id: stopped.append(_id))
+
+    assert idle_stop.main() == 1
+    assert not stopped
+
+
+@pytest.mark.parametrize(
+    ("status_code", "payload", "expected"),
+    [
+        (200, {"value": [{"properties": {"status": "Running"}}, {"properties": {"status": "Failed"}}]}, 1),
+        (200, {"value": []}, 0),
+        (404, {}, 0),
+    ],
+)
+def test_running_job_executions(monkeypatch, status_code, payload, expected):
+    def fake_call(*args, **kwargs):
+        request = httpx.Request("GET", "https://management.azure.com/x")
+        response = httpx.Response(status_code, json=payload, request=request)
+        response.raise_for_status()
+        return response
+
+    monkeypatch.setattr(azure_arm, "_call", fake_call)
+
+    assert azure_arm.running_job_executions("/job") == expected
+
 def test_request_count_sums_metric_points(monkeypatch):
     body = {
         "value": [
