@@ -3,7 +3,7 @@ import os
 import re
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import logging
 
@@ -15,11 +15,19 @@ class GenerationError(Exception):
 
 
 class GeneratedAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Models may put the explanation in another key or leave the answer empty
+    # when evidence is insufficient; that text is not used in that case.
+    model_config = ConfigDict(extra="ignore")
 
-    answer: str = Field(min_length=1)
-    citation_ids: list[str]
+    answer: str = ""
+    citation_ids: list[str] = Field(default_factory=list)
     insufficient_evidence: bool
+
+    @model_validator(mode="after")
+    def _supported_answer_needs_text(self) -> "GeneratedAnswer":
+        if not self.insufficient_evidence and not self.answer.strip():
+            raise ValueError("answer must not be empty")
+        return self
 
 
 SYSTEM_PROMPT = """
@@ -33,7 +41,8 @@ Rules:
 - If you use an inline reference, its ID must also appear in citation_ids.
 - Use only IDs supplied in the sources.
 - If the sources cannot answer the question, set insufficient_evidence
-  to true, explain briefly, and return an empty citation_ids list.
+  to true, put a brief explanation in the answer field, and return an
+  empty citation_ids list.
 - If insufficient_evidence is false, include at least one supporting citation.
 - Answer in the language of the question.
 - Keep the answer concise: normally one to three sentences.
