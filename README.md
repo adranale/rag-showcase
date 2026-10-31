@@ -112,7 +112,7 @@ Rerunning updates the job in place; switching between manual and scheduled requi
 
 **Partial failures:** a file that cannot be processed (scanned PDF while OCR is off, password-protected PDF, unreadable file) is logged as `FAILED: <name>: <error type>` and retried on the next run. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. Scanned PDFs and images need OCR (see below); password-protected PDFs are not supported.
 
-**OCR in Azure (billable, optional).** Create the Document Intelligence account once with `pwsh ./deploy/azure-ocr.ps1 -SubscriptionId <id> -Suffix <suffix>` (it shows subscription and cost notes and asks for confirmation; delete it with `az cognitiveservices account delete`). The next **Azure ingestion job** run finds `di-rag-<suffix>` and gives the job its endpoint and key as a secret automatically.
+**OCR in Azure (billable).** **Azure ingestion job** has an `enable_ocr` input, **on by default**: it creates the Document Intelligence account `di-rag-<suffix>` if it is missing (the `azure-test` approval is the confirmation) and gives the job its endpoint and key as a secret. Untick it to run without creating the account; an account that already exists is still used. You can also create it locally with `pwsh ./deploy/azure-ocr.ps1 -SubscriptionId <id> -Suffix <suffix>`. Delete it with `az cognitiveservices account delete` (OCR then stops working on the next job update).
 
 View executions and logs:
 

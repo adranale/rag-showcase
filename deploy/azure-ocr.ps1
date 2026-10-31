@@ -11,7 +11,7 @@
     The key is not printed or stored by this script. The ingestion job script
     (deploy/azure-ingest-job.ps1, also run by the "Azure ingestion job" workflow)
     looks the account up by name and passes endpoint and key to the job as a
-    Container Apps secret. Run the ingestion job again afterwards.
+    Container Apps secret. Run the ingestion job again afterwards (the "Azure ingestion job" workflow runs this script itself when enable_ocr is on).
 
     Safe to rerun: an existing account is left untouched.
 

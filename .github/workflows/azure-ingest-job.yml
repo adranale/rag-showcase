@@ -31,6 +31,10 @@ on:
         description: Start an execution right away
         default: true
         type: boolean
+      enable_ocr:
+        description: Create the Document Intelligence account for OCR if missing (BILLABLE per page, no monetary cap)
+        default: true
+        type: boolean
       resource_group:
         description: Resource group of the deployment
         default: rg-rag-showcase
@@ -63,6 +67,14 @@ jobs:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create the OCR account (billable, only when requested)
+        if: ${{ inputs.enable_ocr }}
+        shell: pwsh
+        run: >
+          ./deploy/azure-ocr.ps1
+          -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          -ResourceGroup $env:RESOURCE_GROUP -Suffix $env:SUFFIX -AssumeYes
 
       - name: Create or update the job
         shell: pwsh
