@@ -1,0 +1,112 @@
+name: Build and deploy image
+
+# Builds the image and, on main only, rolls rag-api, rag-ui and rag-idle-stop out to
+# the Azure deployment. The deploy job waits for approval of the azure-test environment.
+# The deployment suffix comes from the AZURE_SUFFIX variable (azure-test environment)
+# or the "suffix" input of a manual run. Manual runs on other branches only build.
+on:
+  push:
+    branches: [main, azure-deployment, feature/storage-connectors]
+    paths:
+      - app/**
+      - chat_ui.py
+      - connectors/**
+      - sql/**
+      - "*.py"
+      - Dockerfile
+      - requirements.txt
+      - .github/workflows/build-and-deploy-image.yml
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the built image to Azure (main only)
+        type: boolean
+        default: true
+      suffix:
+        description: Deployment suffix (empty = AZURE_SUFFIX variable)
+        type: string
+      resource_group:
+        description: Resource group of the deployment
+        default: rg-rag-showcase
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy) }}
+    runs-on: ubuntu-latest
+    environment: azure-test
+    concurrency:
+      group: azure-deploy
+      cancel-in-progress: false
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+      RESOURCE_GROUP: ${{ inputs.resource_group || 'rg-rag-showcase' }}
+      SUFFIX: ${{ inputs.suffix || vars.AZURE_SUFFIX }}
+      SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll out the image
+        shell: pwsh
+        run: |
+          if ($env:SUFFIX -notmatch '^[a-z0-9]{3,10}$') {
+            throw 'Set the AZURE_SUFFIX variable (azure-test environment) or the suffix input.'
+          }
+          az config set extension.use_dynamic_install=yes_without_prompt extension.dynamic_install_allow_preview=true | Out-Null
+          foreach ($app in 'rag-api', 'rag-ui') {
+            az containerapp update --resource-group $env:RESOURCE_GROUP --name $app `
+              --subscription $env:SUBSCRIPTION_ID --image $env:IMAGE --output none
+            if ($LASTEXITCODE -ne 0) { throw "Updating $app failed." }
+          }
+          # The idle-stop job only exists once deploy/azure-autostop.ps1 has been run.
+          az containerapp job show --resource-group $env:RESOURCE_GROUP --name rag-idle-stop `
+            --subscription $env:SUBSCRIPTION_ID --query name --output tsv 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            az containerapp job update --resource-group $env:RESOURCE_GROUP --name rag-idle-stop `
+              --subscription $env:SUBSCRIPTION_ID --image $env:IMAGE --output none
+            if ($LASTEXITCODE -ne 0) { throw 'Updating rag-idle-stop failed.' }
+          } else {
+            Write-Host 'rag-idle-stop not found; skipped.'
+          }
+          Write-Host "Deployed $env:IMAGE"
