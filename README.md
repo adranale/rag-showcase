@@ -108,7 +108,7 @@ pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Prov
 # recurring (UTC cron): add -Schedule '0 3 * * *'; Google Drive: -Provider google_drive -Folder <folderId>
 ```
 
-Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) as `azure-test` environment secrets and the optional `INGEST_FOLDER` variable). The database must be running (auto-stop) when the job starts.
+Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) as `azure-test` environment secrets and the optional `INGEST_FOLDER` variable). The workflow starts the PostgreSQL server first if auto-stop had stopped it (running `azure-ingest-job.ps1` locally does not, so start the server yourself).
 
 **Partial failures:** a file that cannot be processed (scanned PDF while OCR is off, password-protected PDF, unreadable file) is logged as `FAILED: <name>: <error type>` and retried on the next run. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. Scanned PDFs and images need OCR (see below); password-protected PDFs are not supported.
 
