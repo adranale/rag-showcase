@@ -74,6 +74,9 @@ jobs:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
           GOOGLE_OAUTH_REFRESH_TOKEN: ${{ secrets.GOOGLE_OAUTH_REFRESH_TOKEN }}
+          DOCINTEL_ENDPOINT: ${{ secrets.DOCINTEL_ENDPOINT }}
+          DOCINTEL_KEY: ${{ secrets.DOCINTEL_KEY }}
+          DOCINTEL_MAX_PAGES: ${{ vars.DOCINTEL_MAX_PAGES }}
         run: >
           ./deploy/azure-ingest-job.ps1
           -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'

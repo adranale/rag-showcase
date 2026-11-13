@@ -25,7 +25,7 @@ The application exposes the following endpoints:
 
 - `app/main.py` — FastAPI app and route definitions
 - `app/db.py` — database connection helpers
-- `app/search.py` — hybrid retrieval: vector search plus keyword/file-name matches (catches exact names and acronyms), fused with reciprocal rank fusion; needs `sql/003_hybrid_search.sql` (applied by `init_db.py`)
+- `app/search.py` — hybrid retrieval: vector search plus keyword and file-name/folder-name matches (name matches weigh 3× more; folder names work for Dropbox only), fused with reciprocal rank fusion; needs `sql/003_hybrid_search.sql` (applied by `init_db.py`)
 - `app/generation.py` — answer generation from retrieved context
 - `data/sample/` — sample documents used for local development
 - `connectors/`, `ingest_remote.py` — Dropbox / Google Drive document sources
@@ -63,7 +63,9 @@ Then open:
 
 ## Ingest from Dropbox or Google Drive
 
-`ingest_remote.py` reads TXT, Markdown and PDF files (plus native Google Docs, exported as text) from a Dropbox or Google Drive folder, recursively, and stores them in the same `documents`/`chunks` tables as local files. Run `embed_chunks.py` afterwards. Access is **read-only**; credentials only come from environment variables / `.env` (git-ignored) and are never logged or stored in the database.
+`ingest_remote.py` reads TXT, Markdown, PDF, Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files (plus native Google Docs, exported as text) from a Dropbox or Google Drive folder, recursively, and stores them in the same `documents`/`chunks` tables as local files. Legacy `.doc`/`.xls`/`.ppt` are not supported and are skipped silently. Excel is read per sheet (cell values, first 5000 rows per sheet; formulas show their last cached value), PowerPoint per slide including tables and speaker notes. With **OCR enabled** (below), image files (`.png`, `.jpg`/`.jpeg`, `.tif`/`.tiff`, `.bmp`, `.heif`) and PDFs without a text layer are read as well. Run `embed_chunks.py` afterwards. Access is **read-only**; credentials only come from environment variables / `.env` (git-ignored) and are never logged or stored in the database.
+
+**OCR with Azure Document Intelligence (optional, billable):** set `DOCINTEL_ENDPOINT` (https URL) and `DOCINTEL_KEY` of an Azure AI Document Intelligence resource (create it yourself, e.g. `az cognitiveservices account create --kind FormRecognizer --sku <sku> ...`; check the SKU's page/size limits and current pricing in the Azure portal). Without both variables OCR is off: images are ignored and scanned PDFs fail as before. Files are sent to the Azure service for text extraction (prebuilt-read model); only PDFs without any extractable text and images are sent, never text-layer PDFs or Office files. Every OCR page is billed, so `DOCINTEL_MAX_PAGES` (default 1000 pages per run, `0` = unlimited) caps a run: files beyond the budget fail and are retried on the next run, which makes large backlogs resumable. For the Azure job set the GitHub secrets `DOCINTEL_ENDPOINT` / `DOCINTEL_KEY` (and optionally the variable `DOCINTEL_MAX_PAGES`) before running the ingest workflow; `deploy/azure-ingest-job.ps1` stores them as job secrets. Note that the script replaces the job's env vars, so always re-supply them on later runs.
 
 ```powershell
 python init_db.py                      # applies sql/002_remote_sources.sql (idempotent)
@@ -108,7 +110,7 @@ pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Prov
 
 Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) as `azure-test` environment secrets and the optional `INGEST_FOLDER` variable). The database must be running (auto-stop) when the job starts.
 
-**Partial failures:** a file that cannot be processed (scanned PDF without text, encrypted PDF, unreadable file) is logged as `FAILED: <name>: <error type>` and retried on the next run. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. PDFs without a text layer need OCR, which is not implemented.
+**Partial failures:** a file that cannot be processed (scanned PDF without text, encrypted PDF, unreadable file) is logged as `FAILED: <name>: <error type>` and retried on the next run. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. PDFs without a text layer are OCR'd when Document Intelligence is configured, otherwise they fail.
 
 View executions and logs:
 

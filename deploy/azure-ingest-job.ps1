@@ -127,6 +127,19 @@ else {
 foreach ($value in $credentialMap.Values) { $script:SecretValues.Add([string]$value) }
 if ($serviceAccount) { $script:SecretValues.Add($serviceAccount) }
 
+# Optional OCR (Azure Document Intelligence): both variables or neither.
+$docIntel = @('DOCINTEL_ENDPOINT', 'DOCINTEL_KEY') | Where-Object { Get-EnvValue $_ }
+if ($docIntel -and $docIntel.Count -ne 2) {
+    throw 'Set both DOCINTEL_ENDPOINT and DOCINTEL_KEY, or neither.'
+}
+if ($docIntel) {
+    if ((Get-EnvValue 'DOCINTEL_ENDPOINT') -notmatch '^https://') { throw 'DOCINTEL_ENDPOINT must be an https:// URL.' }
+    foreach ($name in $docIntel) { $credentialMap[$name] = (Get-EnvValue $name) }
+    $script:SecretValues.Add([string](Get-EnvValue 'DOCINTEL_KEY'))
+}
+$docIntelMaxPages = Get-EnvValue 'DOCINTEL_MAX_PAGES'
+if ($docIntelMaxPages -and $docIntelMaxPages -notmatch '^\d+$') { throw 'DOCINTEL_MAX_PAGES must be a non-negative integer.' }
+
 Invoke-Az 'install/verify az containerapp extension' extension add --name containerapp --only-show-errors | Out-Null
 
 try {
@@ -179,6 +192,7 @@ Write-Host "  Job:             $jobName ($(if ($jobExists) { 'update' } else { '
 Write-Host "  Image:           $Image"
 Write-Host "  Provider/folder: $Provider  $Folder"
 Write-Host '  Credentials:     found in environment (not printed)'
+Write-Host "  OCR:             $(if ($docIntel) { 'Azure Document Intelligence enabled' } else { 'disabled (scanned PDFs and images are skipped/failed)' })"
 Write-Host ''
 if (-not $AssumeYes) {
     $answer = Read-Host "Create/update the job in subscription '$($sub.name)' ($($sub.id))? Type yes to continue"
@@ -189,6 +203,7 @@ if (-not $AssumeYes) {
 $secretArgs = @("db-url=$databaseUrl")
 $envArgs = @("PROVIDER=$Provider", "FOLDER=$Folder", 'DATABASE_URL=secretref:db-url')
 if ($DeleteRemoved) { $envArgs += 'DELETE_REMOVED=true' }
+if ($docIntel -and $docIntelMaxPages) { $envArgs += "DOCINTEL_MAX_PAGES=$docIntelMaxPages" }
 $secretNames = @('db-url')
 foreach ($name in $credentialMap.Keys) {
     $secretName = $name.ToLowerInvariant().Replace('_', '-')
