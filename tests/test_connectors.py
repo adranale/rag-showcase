@@ -131,7 +131,7 @@ def test_gdrive_lists_recursively_and_exports_docs():
                             },
                             {
                                 "id": "f2",
-                                "name": "sheet.xlsx",
+                                "name": "sheet.xls",
                                 "mimeType": "application/x",
                                 "md5Checksum": "z",
                             },
