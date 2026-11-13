@@ -85,8 +85,7 @@ def search_documents(
 
     if len(token_ids) > model.max_seq_length:
         raise ValueError(
-            f"Question exceeds the model's "
-            f"{model.max_seq_length}-token input limit."
+            f"Question exceeds the model's {model.max_seq_length}-token input limit."
         )
 
     embedding = model.encode(
