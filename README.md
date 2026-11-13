@@ -25,7 +25,7 @@ The application exposes the following endpoints:
 
 - `app/main.py` — FastAPI app and route definitions
 - `app/db.py` — database connection helpers
-- `app/search.py` — embedding and vector search logic
+- `app/search.py` — hybrid retrieval: vector search plus keyword/file-name matches (catches exact names and acronyms), fused with reciprocal rank fusion; needs `sql/003_hybrid_search.sql` (applied by `init_db.py`)
 - `app/generation.py` — answer generation from retrieved context
 - `data/sample/` — sample documents used for local development
 - `connectors/`, `ingest_remote.py` — Dropbox / Google Drive document sources
