@@ -12,6 +12,14 @@ RRF_K = 60
 CANDIDATES_MIN = 25
 MAX_KEYWORDS = 8
 TITLE_CHUNKS = 2
+TITLE_WEIGHT = 3.0  # file/folder-name matches count more than content matches
+
+# Folder path of a Dropbox file (source_url is the Dropbox web URL of the path).
+_FOLDER_PATH = """
+    CASE WHEN d.source_url LIKE 'https://www.dropbox.com/home%%'
+         THEN replace(d.source_url, 'https://www.dropbox.com/home', '')
+         ELSE '' END
+"""
 
 # Question filler that would match almost every chunk in the keyword search.
 STOPWORDS = frozenset(
@@ -36,12 +44,17 @@ def extract_keywords(question: str) -> list[str]:
     return terms[:MAX_KEYWORDS]
 
 
-def fuse(rankings: list[list[int]], k: int = RRF_K) -> list[int]:
-    """Reciprocal rank fusion: best-first chunk ids from several ranked id lists."""
+def fuse(
+    rankings: list[list[int]],
+    k: int = RRF_K,
+    weights: list[float] | None = None,
+) -> list[int]:
+    """Weighted reciprocal rank fusion: best-first chunk ids from ranked id lists."""
     scores: dict[int, float] = {}
-    for ranking in rankings:
+    for index, ranking in enumerate(rankings):
+        weight = weights[index] if weights else 1.0
         for position, chunk_id in enumerate(ranking, start=1):
-            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + position)
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (k + position)
     return sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))
 
 
@@ -98,11 +111,13 @@ def search_documents(
 
     rows_by_id: dict[int, tuple] = {}
     rankings: list[list[int]] = []
+    weights: list[float] = []
 
     def collect(rows: list[tuple]) -> None:
         for row in rows:
             rows_by_id.setdefault(row[3], row)
         rankings.append([row[3] for row in rows])
+        weights.append(1.0)
 
     with get_connection() as conn:
         register_vector(conn)
@@ -138,7 +153,14 @@ def search_documents(
                 ).fetchall()
             )
 
-            # A term in the file name points at the document: take its first chunks.
+            # Terms in the file name or folder path point at the document: take its
+            # first chunks, documents matching the most terms (name counts double) first.
+            patterns = [_like_pattern(term) for term in keywords]
+            score = " + ".join(
+                f"2 * (d.title ILIKE %s)::int + ({_FOLDER_PATH} ILIKE %s)::int"
+                for _ in keywords
+            )
+            score_params = [p for pattern in patterns for p in (pattern, pattern)]
             collect(
                 conn.execute(
                     f"""
@@ -147,19 +169,22 @@ def search_documents(
                     JOIN documents AS d ON d.id = c.document_id
                     WHERE {_FILTER}
                       AND c.chunk_number < %s
-                      AND d.title ILIKE ANY(%s)
-                    ORDER BY d.id, c.chunk_number
+                      AND (d.title ILIKE ANY(%s) OR {_FOLDER_PATH} ILIKE ANY(%s))
+                    ORDER BY {score} DESC, d.id, c.chunk_number
                     LIMIT %s;
                     """,
                     (
                         query_vector,
                         MODEL_NAME,
                         TITLE_CHUNKS,
-                        [_like_pattern(term) for term in keywords],
+                        patterns,
+                        patterns,
+                        *score_params,
                         candidates,
                     ),
                 ).fetchall()
             )
+            weights[-1] = TITLE_WEIGHT
 
     return [
         {
@@ -172,5 +197,7 @@ def search_documents(
             "location": row[6],
             "similarity": float(row[7]),
         }
-        for row in (rows_by_id[chunk_id] for chunk_id in fuse(rankings)[:top_k])
+        for row in (
+            rows_by_id[chunk_id] for chunk_id in fuse(rankings, weights=weights)[:top_k]
+        )
     ]
