@@ -5,6 +5,7 @@ from sentence_transformers import SentenceTransformer
 from app.db import get_connection
 
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+SLICE_SIZE = 1000
 
 
 def main():
@@ -62,48 +63,56 @@ def main():
                     "Split this chunk before embedding."
                 )
 
-        embeddings = model.encode(
-            texts,
-            batch_size=16,
-            normalize_embeddings=True,
-            show_progress_bar=True,
-        )
-
-        for (chunk_id, _), embedding in zip(chunks, embeddings):
-            conn.execute(
-                """
-                UPDATE chunks
-                SET embedding = %s,
-                    embedding_model = %s
-                WHERE id = %s;
-                """,
-                (Vector(embedding.tolist()), MODEL_NAME, chunk_id),
+        # Commit per slice so a timed-out run keeps its progress and a rerun resumes.
+        for start in range(0, len(chunks), SLICE_SIZE):
+            part = chunks[start : start + SLICE_SIZE]
+            embeddings = model.encode(
+                texts[start : start + SLICE_SIZE],
+                batch_size=16,
+                normalize_embeddings=True,
+                show_progress_bar=False,
             )
-
-        conn.execute(
-            """
-            UPDATE documents AS d
-            SET ingestion_status = 'indexed',
-                indexed_at = now()
-            WHERE EXISTS (
-                SELECT 1
-                FROM chunks AS c
-                WHERE c.document_id = d.id
-            )
-            AND NOT EXISTS (
-                SELECT 1
-                FROM chunks AS c
-                WHERE c.document_id = d.id
-                  AND (
-                      c.embedding IS NULL
-                      OR c.embedding_model IS DISTINCT FROM %s
-                  )
-            );
-            """,
-            (MODEL_NAME,),
-        )
+            for (chunk_id, _), embedding in zip(part, embeddings):
+                conn.execute(
+                    """
+                    UPDATE chunks
+                    SET embedding = %s,
+                        embedding_model = %s
+                    WHERE id = %s;
+                    """,
+                    (Vector(embedding.tolist()), MODEL_NAME, chunk_id),
+                )
+            mark_indexed(conn)
+            conn.commit()
+            print(f"Embedded {start + len(part)}/{len(chunks)} chunks", flush=True)
 
     print(f"Saved embeddings for {len(chunks)} chunks.")
+
+
+def mark_indexed(conn) -> None:
+    conn.execute(
+        """
+        UPDATE documents AS d
+        SET ingestion_status = 'indexed',
+            indexed_at = now()
+        WHERE d.ingestion_status IS DISTINCT FROM 'indexed'
+        AND EXISTS (
+            SELECT 1
+            FROM chunks AS c
+            WHERE c.document_id = d.id
+        )
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chunks AS c
+            WHERE c.document_id = d.id
+              AND (
+                  c.embedding IS NULL
+                  OR c.embedding_model IS DISTINCT FROM %s
+              )
+        );
+        """,
+        (MODEL_NAME,),
+    )
 
 
 if __name__ == "__main__":
