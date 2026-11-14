@@ -50,7 +50,7 @@ opentelemetry-semantic-conventions==0.66b1
 packaging==26.3
 pandas==3.0.6
 pgvector==0.5.1
-pillow==12.3.0
+pillow==13.0.0
 pluggy==1.6.0
 protobuf==7.36.2
 psycopg==3.3.6
