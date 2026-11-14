@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from connectors import base
-from connectors.base import ConnectorError
+from connectors.base import ConnectorError, DocumentError
 from connectors.chunking import PipelineChunker
 from connectors.extract import docx_sections, pptx_sections, xlsx_sections
 from connectors.ocr import DocumentIntelligence, OcrBudgetError
@@ -211,3 +211,35 @@ def test_image_without_ocr_fails_and_with_empty_ocr_fails():
         StubChunker(ocr=None).chunk("image", b"x")
     with pytest.raises(ValueError, match="no text"):
         StubChunker(ocr=FakeOcr([])).chunk("image", b"x")
+
+
+def png(size: tuple[int, int]) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, "white").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def test_tiny_images_are_skipped_without_calling_ocr(monkeypatch):
+    ocr = FakeOcr([(1, "text")])
+    with pytest.raises(ValueError, match="too small"):
+        StubChunker(ocr=ocr).chunk("image", png((48, 48)))
+    assert ocr.requested == []
+    assert StubChunker(ocr=ocr).chunk("image", png((300, 200))).chunks
+    monkeypatch.setenv("DOCINTEL_MIN_IMAGE_PIXELS", "0")
+    assert StubChunker(ocr=ocr).chunk("image", png((48, 48))).chunks
+
+
+def test_failure_log_shows_message_only_for_own_error_types(capsys):
+    from connectors.base import failure_detail
+
+    assert failure_detail(DocumentError("Image is too small")) == "Image is too small"
+    assert failure_detail(ConnectorError("HTTP 400")) == "HTTP 400"
+    assert failure_detail(ValueError("may contain document text")) == ""
+
+
+def test_ocr_rejection_message_has_status_size_and_pages():
+    ocr = ocr_client(lambda request: httpx.Response(400, text="body"))
+    with pytest.raises(ConnectorError, match=r"HTTP 400, 3 bytes, 2 page"):
+        ocr.read(b"abc", pages=2)

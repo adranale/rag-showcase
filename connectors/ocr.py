@@ -11,18 +11,29 @@ import time
 
 import httpx
 
-from connectors.base import ConnectorError
+from connectors.base import ConnectorError, DocumentError
 
 API_VERSION = "2024-11-30"
 DEFAULT_PAGE_BUDGET = 1000
+DEFAULT_MIN_IMAGE_PIXELS = 100
 POLL_SECONDS = 2.0
 TIMEOUT_SECONDS = 600.0
 RETRY_STATUS = {429, 503}
 MAX_RETRIES = 5
 
 
-class OcrBudgetError(ValueError):
+class OcrBudgetError(DocumentError):
     """The per-run OCR page budget is used up."""
+
+
+def min_image_pixels() -> int:
+    """Smallest side (px) an image needs to be OCR'd; 0 disables the check."""
+    try:
+        return max(
+            0, int(os.getenv("DOCINTEL_MIN_IMAGE_PIXELS", DEFAULT_MIN_IMAGE_PIXELS))
+        )
+    except ValueError:
+        return DEFAULT_MIN_IMAGE_PIXELS
 
 
 class DocumentIntelligence:
@@ -95,7 +106,8 @@ class DocumentIntelligence:
         )
         if response.status_code != 202:
             raise ConnectorError(
-                f"Document Intelligence rejected the file (HTTP {response.status_code})"
+                f"Document Intelligence rejected the file (HTTP {response.status_code}, "
+                f"{len(data)} bytes, {pages} page(s))"
             )
         operation = response.headers.get("Operation-Location", "")
         if not operation.startswith(self._endpoint):

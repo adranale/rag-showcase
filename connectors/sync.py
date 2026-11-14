@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from connectors.base import SourceConnector
+from connectors.base import SourceConnector, failure_detail
 from connectors.chunking import Chunker
 from connectors.store import DocumentStore
 
@@ -58,8 +58,11 @@ def sync(
             store.save(connection_id, remote, document)
             result.ingested.append(file_id)
         except Exception as exc:  # noqa: BLE001
-            # Log only the error type: messages could contain document content.
-            print(f"FAILED: {remote.name}: {type(exc).__name__}")
+            # Log only the error type, plus the message of our own error types:
+            # other messages could contain document content.
+            detail = failure_detail(exc)
+            suffix = f" | {detail}" if detail else ""
+            print(f"FAILED: {remote.name}: {type(exc).__name__}{suffix}")
             store.mark_failed(connection_id, remote)
             result.failed.append(file_id)
 

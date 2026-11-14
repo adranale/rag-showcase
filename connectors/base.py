@@ -38,6 +38,15 @@ class ConnectorError(RuntimeError):
     """Raised for configuration or remote API problems (never contains secrets)."""
 
 
+class DocumentError(ValueError):
+    """A file cannot be processed; the message is fixed text, never file content."""
+
+
+def failure_detail(exc: Exception) -> str:
+    """Message that is safe to log; empty for exceptions that might carry content."""
+    return str(exc) if isinstance(exc, ConnectorError | DocumentError) else ""
+
+
 @dataclass(frozen=True)
 class RemoteFile:
     file_id: str
