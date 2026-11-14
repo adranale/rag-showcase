@@ -3,7 +3,7 @@ import io
 from dataclasses import dataclass
 from typing import Protocol
 
-from connectors.base import DocumentError
+from connectors.base import DocumentError, PermanentDocumentError
 from connectors.extract import EXTRACTORS
 from connectors.ocr import DocumentIntelligence, min_image_pixels
 from ingest_text import split_paragraphs
@@ -91,7 +91,7 @@ class PipelineChunker:
     def _chunk_office(self, kind: str, data: bytes) -> ChunkedDocument:
         sections = EXTRACTORS[kind](data)
         if not sections:
-            raise DocumentError("Document is empty.")
+            raise PermanentDocumentError("Document is empty.")
         self._load()
         chunks = []
         for location, text in sections:
@@ -114,7 +114,7 @@ class PipelineChunker:
     def _ocr_document(self, data: bytes, pages: int) -> ChunkedDocument:
         chunks = self._page_chunks(self._ocr.read(data, pages=pages))
         if not chunks:
-            raise DocumentError("OCR found no text.")
+            raise PermanentDocumentError("OCR found no text.")
         return ChunkedDocument(
             hashlib.sha256(data).hexdigest(), OCR_CHUNKING_VERSION, chunks
         )
@@ -134,7 +134,7 @@ class PipelineChunker:
             frames, image_size = 1, None
         # Icons and logos have no useful text and small images are rejected by the service.
         if image_size is not None and min(image_size) < min_image_pixels():
-            raise DocumentError(
+            raise PermanentDocumentError(
                 f"Image is too small for OCR ({image_size[0]}x{image_size[1]} px)."
             )
         return self._ocr_document(data, frames)
@@ -150,7 +150,7 @@ class PipelineChunker:
     def _chunk_text(self, data: bytes) -> ChunkedDocument:
         text = self._decode(data).strip()
         if not text:
-            raise DocumentError("Document is empty.")
+            raise PermanentDocumentError("Document is empty.")
         self._load()
         chunks = []
         for number, paragraph in enumerate(split_paragraphs(text), start=1):
@@ -175,7 +175,7 @@ class PipelineChunker:
 
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
-            raise DocumentError("Encrypted PDFs are not supported.")
+            raise PermanentDocumentError("Encrypted PDFs are not supported.")
         self._load()
         chunks = []
         for page_number, page in enumerate(reader.pages, start=1):

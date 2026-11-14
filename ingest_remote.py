@@ -45,7 +45,8 @@ def main() -> None:
 
     print(
         f"Ingested: {len(result.ingested)} | Skipped: {len(result.skipped)} | "
-        f"Removed: {len(result.removed)} | Failed: {len(result.failed)}"
+        f"Removed: {len(result.removed)} | Failed: {len(result.failed)} | "
+        f"Unsupported: {len(result.unsupported)}"
     )
     if result.removal_skipped:
         print(

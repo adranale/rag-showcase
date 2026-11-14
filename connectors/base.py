@@ -42,6 +42,10 @@ class DocumentError(ValueError):
     """A file cannot be processed; the message is fixed text, never file content."""
 
 
+class PermanentDocumentError(DocumentError):
+    """The file itself can never be processed (retrying the same version is futile)."""
+
+
 def failure_detail(exc: Exception) -> str:
     """Message that is safe to log; empty for exceptions that might carry content."""
     return str(exc) if isinstance(exc, ConnectorError | DocumentError) else ""

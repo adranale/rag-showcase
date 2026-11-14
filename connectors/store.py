@@ -27,7 +27,9 @@ class DocumentStore(Protocol):
 
     def update_version(self, document_id: int, version: str) -> None: ...
 
-    def mark_failed(self, connection_id: int, remote: RemoteFile) -> None: ...
+    def mark_failed(
+        self, connection_id: int, remote: RemoteFile, permanent: bool = False
+    ) -> None: ...
 
     def remove(
         self, connection_id: int, external_ids: list[str], delete: bool
@@ -130,17 +132,25 @@ class PostgresStore:
                 (version, document_id),
             )
 
-    def mark_failed(self, connection_id: int, remote: RemoteFile) -> None:
+    def mark_failed(
+        self, connection_id: int, remote: RemoteFile, permanent: bool = False
+    ) -> None:
+        # Permanent failures keep the remote version so they are skipped until it changes.
+        status = "unsupported" if permanent else "failed"
+        version = remote.version if permanent else None
         with get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO documents (
                     connection_id, external_file_id, title, source_url,
-                    mime_type, ingestion_status
+                    mime_type, ingestion_status, source_version
                 )
-                VALUES (%s, %s, %s, %s, %s, 'failed')
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (connection_id, external_file_id)
-                DO UPDATE SET ingestion_status = 'failed';
+                DO UPDATE SET ingestion_status = EXCLUDED.ingestion_status,
+                    source_version = COALESCE(
+                        EXCLUDED.source_version, documents.source_version
+                    );
                 """,
                 (
                     connection_id,
@@ -148,6 +158,8 @@ class PostgresStore:
                     remote.name,
                     remote.url,
                     remote.mime_type,
+                    status,
+                    version,
                 ),
             )
 
