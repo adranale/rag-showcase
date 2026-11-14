@@ -55,7 +55,7 @@ jobs:
       SCHEDULE: ${{ inputs.schedule }}
       RESOURCE_GROUP: ${{ inputs.resource_group }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
