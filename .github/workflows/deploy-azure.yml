@@ -83,7 +83,7 @@ jobs:
           -Suffix $env:SUFFIX -ResourceGroup $env:RESOURCE_GROUP -Location $env:LOCATION
           -Image $env:IMAGE -EnvFile $env:ENV_FILE -AssumeYes
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: ${{ !inputs.preflight_only }}
         with:
           python-version: "3.12"
