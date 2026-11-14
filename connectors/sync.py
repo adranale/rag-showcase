@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from connectors.base import SourceConnector, failure_detail
+from connectors.base import PermanentDocumentError, SourceConnector, failure_detail
 from connectors.chunking import Chunker
 from connectors.store import DocumentStore
 
@@ -10,6 +10,7 @@ class SyncResult:
     ingested: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     removal_skipped: bool = False
 
@@ -41,7 +42,7 @@ def sync(
         if (
             stored
             and stored.version == remote.version
-            and stored.status in ("pending", "indexed")
+            and stored.status in ("pending", "indexed", "unsupported")
         ):
             result.skipped.append(file_id)
             continue
@@ -63,8 +64,12 @@ def sync(
             detail = failure_detail(exc)
             suffix = f" | {detail}" if detail else ""
             print(f"FAILED: {remote.name}: {type(exc).__name__}{suffix}")
-            store.mark_failed(connection_id, remote)
-            result.failed.append(file_id)
+            if isinstance(exc, PermanentDocumentError):
+                store.mark_failed(connection_id, remote, permanent=True)
+                result.unsupported.append(file_id)
+            else:
+                store.mark_failed(connection_id, remote)
+                result.failed.append(file_id)
 
     gone = [
         file_id

@@ -242,9 +242,11 @@ class MemoryStore:
     def update_version(self, document_id, version):
         list(self.docs.values())[document_id]["version"] = version
 
-    def mark_failed(self, connection_id, remote):
-        self.docs.setdefault(remote.file_id, {"version": None, "hash": None})
-        self.docs[remote.file_id]["status"] = "failed"
+    def mark_failed(self, connection_id, remote, permanent=False):
+        doc = self.docs.setdefault(remote.file_id, {"version": None, "hash": None})
+        doc["status"] = "unsupported" if permanent else "failed"
+        if permanent:
+            doc["version"] = remote.version
 
     def remove(self, connection_id, external_ids, delete):
         for ext in external_ids:
@@ -324,6 +326,26 @@ def test_sync_failure_is_recorded_retried_and_not_marked_synced():
 
     retry = sync(FakeConnector([remote("a", "1")]), store, FakeChunker())
     assert retry.ingested == ["a"]
+
+
+def test_permanent_failure_is_not_retried_until_the_file_changes():
+    from connectors.base import PermanentDocumentError
+
+    class Unreadable(FakeChunker):
+        def chunk(self, kind, data):
+            raise PermanentDocumentError("OCR found no text.")
+
+    store = MemoryStore()
+    first = sync(FakeConnector([remote("a", "1")]), store, Unreadable())
+    assert first.unsupported == ["a"] and first.failed == []
+    assert store.synced == 1 and store.docs["a"]["status"] == "unsupported"
+
+    again = FakeConnector([remote("a", "1")])
+    result = sync(again, store, Unreadable())
+    assert result.skipped == ["a"] and again.downloads == []
+
+    changed = sync(FakeConnector([remote("a", "2")]), store, FakeChunker())
+    assert changed.ingested == ["a"]
 
 
 def test_listing_error_does_not_remove_anything():
