@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from connectors.extract import EXTRACTORS
-from connectors.ocr import DocumentIntelligence
+from connectors.ocr import DocumentIntelligence, min_image_pixels
 from ingest_text import split_paragraphs
 
 TEXT_CHUNKING_VERSION = "paragraph-token-window-v1"
@@ -128,8 +128,12 @@ class PipelineChunker:
 
             with Image.open(io.BytesIO(data)) as image:
                 frames = getattr(image, "n_frames", 1)
+                smallest_side = min(image.size)
         except Exception:  # noqa: BLE001 - e.g. HEIF, which Pillow cannot open
-            frames = 1
+            frames, smallest_side = 1, None
+        # Icons and logos have no useful text and small images are rejected by the service.
+        if smallest_side is not None and smallest_side < min_image_pixels():
+            raise ValueError("Image is too small for OCR.")
         return self._ocr_document(data, frames)
 
     def _decode(self, data: bytes) -> str:

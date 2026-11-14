@@ -15,6 +15,7 @@ from connectors.base import ConnectorError
 
 API_VERSION = "2024-11-30"
 DEFAULT_PAGE_BUDGET = 1000
+DEFAULT_MIN_IMAGE_PIXELS = 100
 POLL_SECONDS = 2.0
 TIMEOUT_SECONDS = 600.0
 RETRY_STATUS = {429, 503}
@@ -23,6 +24,16 @@ MAX_RETRIES = 5
 
 class OcrBudgetError(ValueError):
     """The per-run OCR page budget is used up."""
+
+
+def min_image_pixels() -> int:
+    """Smallest side (px) an image needs to be OCR'd; 0 disables the check."""
+    try:
+        return max(
+            0, int(os.getenv("DOCINTEL_MIN_IMAGE_PIXELS", DEFAULT_MIN_IMAGE_PIXELS))
+        )
+    except ValueError:
+        return DEFAULT_MIN_IMAGE_PIXELS
 
 
 class DocumentIntelligence:

@@ -211,3 +211,21 @@ def test_image_without_ocr_fails_and_with_empty_ocr_fails():
         StubChunker(ocr=None).chunk("image", b"x")
     with pytest.raises(ValueError, match="no text"):
         StubChunker(ocr=FakeOcr([])).chunk("image", b"x")
+
+
+def png(size: tuple[int, int]) -> bytes:
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", size, "white").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def test_tiny_images_are_skipped_without_calling_ocr(monkeypatch):
+    ocr = FakeOcr([(1, "text")])
+    with pytest.raises(ValueError, match="too small"):
+        StubChunker(ocr=ocr).chunk("image", png((48, 48)))
+    assert ocr.requested == []
+    assert StubChunker(ocr=ocr).chunk("image", png((300, 200))).chunks
+    monkeypatch.setenv("DOCINTEL_MIN_IMAGE_PIXELS", "0")
+    assert StubChunker(ocr=ocr).chunk("image", png((48, 48))).chunks
