@@ -67,6 +67,7 @@ Validation without deploying: parse the PowerShell script, run tests, validate w
 - Commit messages must not mention Copilot or AI tools: no "Co-authored-by: Copilot" trailer, no tool names.
 
 ## Security
+- Dependabot (`.github/dependabot.yml`: pip, GitHub Actions, Docker; weekly) opens update PRs; Dependabot alerts/security updates are repo settings. `main` is protected (PR required, no force-push/deletion; admins may bypass). Review and merge Dependabot PRs manually, then rebuild/redeploy the image.
 - Never commit secrets. API keys and OAuth credentials (Google, Dropbox, LLM providers) come from environment variables / `.env` (git-ignored).
 - Do not log document contents or access tokens.
 - Request only the minimum OAuth scopes (read-only where possible).
