@@ -11,7 +11,7 @@ import time
 
 import httpx
 
-from connectors.base import ConnectorError
+from connectors.base import ConnectorError, DocumentError
 
 API_VERSION = "2024-11-30"
 DEFAULT_PAGE_BUDGET = 1000
@@ -22,7 +22,7 @@ RETRY_STATUS = {429, 503}
 MAX_RETRIES = 5
 
 
-class OcrBudgetError(ValueError):
+class OcrBudgetError(DocumentError):
     """The per-run OCR page budget is used up."""
 
 
@@ -106,7 +106,8 @@ class DocumentIntelligence:
         )
         if response.status_code != 202:
             raise ConnectorError(
-                f"Document Intelligence rejected the file (HTTP {response.status_code})"
+                f"Document Intelligence rejected the file (HTTP {response.status_code}, "
+                f"{len(data)} bytes, {pages} page(s))"
             )
         operation = response.headers.get("Operation-Location", "")
         if not operation.startswith(self._endpoint):

@@ -3,6 +3,7 @@ import io
 from dataclasses import dataclass
 from typing import Protocol
 
+from connectors.base import DocumentError
 from connectors.extract import EXTRACTORS
 from connectors.ocr import DocumentIntelligence, min_image_pixels
 from ingest_text import split_paragraphs
@@ -90,7 +91,7 @@ class PipelineChunker:
     def _chunk_office(self, kind: str, data: bytes) -> ChunkedDocument:
         sections = EXTRACTORS[kind](data)
         if not sections:
-            raise ValueError("Document is empty.")
+            raise DocumentError("Document is empty.")
         self._load()
         chunks = []
         for location, text in sections:
@@ -113,14 +114,14 @@ class PipelineChunker:
     def _ocr_document(self, data: bytes, pages: int) -> ChunkedDocument:
         chunks = self._page_chunks(self._ocr.read(data, pages=pages))
         if not chunks:
-            raise ValueError("OCR found no text.")
+            raise DocumentError("OCR found no text.")
         return ChunkedDocument(
             hashlib.sha256(data).hexdigest(), OCR_CHUNKING_VERSION, chunks
         )
 
     def _chunk_image(self, data: bytes) -> ChunkedDocument:
         if self._ocr is None:
-            raise ValueError(
+            raise DocumentError(
                 "OCR is not configured (DOCINTEL_ENDPOINT / DOCINTEL_KEY)."
             )
         try:
@@ -128,12 +129,14 @@ class PipelineChunker:
 
             with Image.open(io.BytesIO(data)) as image:
                 frames = getattr(image, "n_frames", 1)
-                smallest_side = min(image.size)
+                image_size = image.size
         except Exception:  # noqa: BLE001 - e.g. HEIF, which Pillow cannot open
-            frames, smallest_side = 1, None
+            frames, image_size = 1, None
         # Icons and logos have no useful text and small images are rejected by the service.
-        if smallest_side is not None and smallest_side < min_image_pixels():
-            raise ValueError("Image is too small for OCR.")
+        if image_size is not None and min(image_size) < min_image_pixels():
+            raise DocumentError(
+                f"Image is too small for OCR ({image_size[0]}x{image_size[1]} px)."
+            )
         return self._ocr_document(data, frames)
 
     def _decode(self, data: bytes) -> str:
@@ -147,7 +150,7 @@ class PipelineChunker:
     def _chunk_text(self, data: bytes) -> ChunkedDocument:
         text = self._decode(data).strip()
         if not text:
-            raise ValueError("Document is empty.")
+            raise DocumentError("Document is empty.")
         self._load()
         chunks = []
         for number, paragraph in enumerate(split_paragraphs(text), start=1):
@@ -172,7 +175,7 @@ class PipelineChunker:
 
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
-            raise ValueError("Encrypted PDFs are not supported.")
+            raise DocumentError("Encrypted PDFs are not supported.")
         self._load()
         chunks = []
         for page_number, page in enumerate(reader.pages, start=1):
@@ -192,7 +195,7 @@ class PipelineChunker:
                 )
         if not chunks:
             if self._ocr is None:
-                raise ValueError(
+                raise DocumentError(
                     "No extractable text found. The PDF may require OCR "
                     "(set DOCINTEL_ENDPOINT / DOCINTEL_KEY)."
                 )
