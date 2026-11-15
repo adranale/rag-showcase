@@ -45,7 +45,7 @@ The application exposes the following endpoints:
 On Windows PowerShell:
 
 ```powershell
-cd C:\Gothaer\code\github\adranale\rag-showcase
+cd C:\...\rag-showcase
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
