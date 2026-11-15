@@ -9,3 +9,4 @@ data/private/
 certs/
 data/sample/
 output/
+failed-files-paths.csv
