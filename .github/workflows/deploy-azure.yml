@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: echo "ENV_FILE=$RUNNER_TEMP/rag-azure.env" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
