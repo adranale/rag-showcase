@@ -1,5 +1,6 @@
 import hashlib
 import io
+import zipfile
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -89,7 +90,12 @@ class PipelineChunker:
         return chunks
 
     def _chunk_office(self, kind: str, data: bytes) -> ChunkedDocument:
-        sections = EXTRACTORS[kind](data)
+        try:
+            sections = EXTRACTORS[kind](data)
+        except zipfile.BadZipFile as exc:
+            raise PermanentDocumentError(
+                "File is not a valid Office document."
+            ) from exc
         if not sections:
             raise PermanentDocumentError("Document is empty.")
         self._load()

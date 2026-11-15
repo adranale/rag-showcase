@@ -243,3 +243,20 @@ def test_ocr_rejection_message_has_status_size_and_pages():
     ocr = ocr_client(lambda request: httpx.Response(400, text="body"))
     with pytest.raises(ConnectorError, match=r"HTTP 400, 3 bytes, 2 page"):
         ocr.read(b"abc", pages=2)
+
+
+def test_corrupt_office_file_is_a_permanent_failure():
+    from connectors.base import PermanentDocumentError
+
+    with pytest.raises(PermanentDocumentError):
+        PipelineChunker().chunk("xlsx", b"not a zip file")
+
+
+def test_every_status_constraint_allows_unsupported():
+    # init_db re-applies all migrations on every run, so none may reject stored rows.
+    from pathlib import Path
+
+    for sql in Path("sql").glob("*.sql"):
+        text = sql.read_text(encoding="utf-8")
+        if "ADD CONSTRAINT documents_ingestion_status_check" in text:
+            assert "'unsupported'" in text, sql.name
