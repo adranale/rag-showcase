@@ -359,3 +359,17 @@ def test_listing_error_does_not_remove_anything():
     with pytest.raises(ConnectorError):
         sync(Broken([]), store, FakeChunker())
     assert store.docs["a"]["status"] == "pending"
+
+
+def test_failed_log_line_shows_full_dropbox_path(capsys):
+    dropbox = RemoteFile(
+        "a",
+        "a.txt",
+        "1",
+        "text",
+        "text/plain",
+        url="https://www.dropbox.com/home/Unterlagen/Steuer/a.txt",
+    )
+    sync(FakeConnector([dropbox], fail_ids={"a"}), MemoryStore(), FakeChunker())
+
+    assert "FAILED: /Unterlagen/Steuer/a.txt:" in capsys.readouterr().out

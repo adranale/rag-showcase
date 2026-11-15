@@ -1,6 +1,11 @@
 from dataclasses import dataclass, field
 
-from connectors.base import PermanentDocumentError, SourceConnector, failure_detail
+from connectors.base import (
+    PermanentDocumentError,
+    RemoteFile,
+    SourceConnector,
+    failure_detail,
+)
 from connectors.chunking import Chunker
 from connectors.store import DocumentStore
 
@@ -13,6 +18,14 @@ class SyncResult:
     unsupported: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     removal_skipped: bool = False
+
+
+def display_path(remote: RemoteFile) -> str:
+    # Dropbox files carry their full path in the URL; other providers only have a name.
+    prefix = "https://www.dropbox.com/home"
+    if remote.url and remote.url.startswith(prefix):
+        return remote.url[len(prefix) :] or remote.name
+    return remote.name
 
 
 def sync(
@@ -63,7 +76,7 @@ def sync(
             # other messages could contain document content.
             detail = failure_detail(exc)
             suffix = f" | {detail}" if detail else ""
-            print(f"FAILED: {remote.name}: {type(exc).__name__}{suffix}")
+            print(f"FAILED: {display_path(remote)}: {type(exc).__name__}{suffix}")
             if isinstance(exc, PermanentDocumentError):
                 store.mark_failed(connection_id, remote, permanent=True)
                 result.unsupported.append(file_id)
