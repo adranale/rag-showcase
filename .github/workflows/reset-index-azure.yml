@@ -83,7 +83,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the firewall rule.' }
           }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
