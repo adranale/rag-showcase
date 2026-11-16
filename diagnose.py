@@ -13,9 +13,9 @@ from app.search import MODEL_NAME, search_documents
 TOP_K = 8
 
 
-def report(query: str) -> None:
+def report(query: str, user_id: int | None) -> None:
     term = f"%{query}%"
-    with get_connection() as conn:
+    with get_connection(user_id) as conn:
         print("== documents by status")
         for status, count in conn.execute(
             "SELECT ingestion_status, count(*) FROM documents GROUP BY 1 ORDER BY 1"
@@ -55,12 +55,19 @@ def report(query: str) -> None:
             print("(none)")
 
     print(f"== semantic top {TOP_K} (model {MODEL_NAME})")
+    if user_id is None:
+        print("(semantic search skipped: set DIAG_USER_ID)")
+        return
     from sentence_transformers import SentenceTransformer
 
     model = SentenceTransformer(MODEL_NAME)
-    for hit in search_documents(model, query, TOP_K):
+    for hit in search_documents(model, query, TOP_K, user_id):
         print(f"{hit['similarity']:.3f} {hit['title']}")
 
 
 if __name__ == "__main__":
-    report(os.environ.get("DIAG_QUERY", "").strip() or "test")
+    diag_user = os.environ.get("DIAG_USER_ID", "").strip()
+    report(
+        os.environ.get("DIAG_QUERY", "").strip() or "test",
+        int(diag_user) if diag_user else None,
+    )

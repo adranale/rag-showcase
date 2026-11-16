@@ -22,8 +22,12 @@ services:
       DATABASE_URL: postgresql://rag:local_dev_only@db:5432/rag
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.2:3b
-    ports:
-      - "127.0.0.1:8000:8000"
+      # Local dev only: the owner role `rag` bypasses RLS (queries still filter by user_id).
+      USER_TOKEN_SECRET: ${USER_TOKEN_SECRET:?set USER_TOKEN_SECRET (32+ chars) in .env}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      DROPBOX_APP_KEY: ${DROPBOX_APP_KEY:-}
+      DROPBOX_APP_SECRET: ${DROPBOX_APP_SECRET:-}
+      DROPBOX_REDIRECT_URI: ${DROPBOX_REDIRECT_URI:-http://localhost:8501/}
     volumes:
       - huggingface_cache:/home/appuser/.cache/huggingface
     depends_on:
@@ -42,17 +46,15 @@ services:
 
   ui:
     image: rag-showcase:local
-    command:
-      - python
-      - -m
-      - streamlit
-      - run
-      - chat_ui.py
-      - --server.address=0.0.0.0
-      - --server.port=8501
-      - --server.headless=true
+    command: ["python", "ui_start.py"]
     environment:
       RAG_API_BASE_URL: http://api:8000
+      USER_TOKEN_SECRET: ${USER_TOKEN_SECRET:?set USER_TOKEN_SECRET (32+ chars) in .env}
+      AUTH_REDIRECT_URI: ${AUTH_REDIRECT_URI:-http://localhost:8501/oauth2callback}
+      AUTH_COOKIE_SECRET: ${AUTH_COOKIE_SECRET:-}
+      MS_CLIENT_ID: ${MS_CLIENT_ID:-}
+      MS_CLIENT_SECRET: ${MS_CLIENT_SECRET:-}
+      MS_TENANT: ${MS_TENANT:-consumers}
     ports:
       - "127.0.0.1:8501:8501"
     depends_on:

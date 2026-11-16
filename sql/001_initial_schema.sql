@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     UNIQUE (document_id, chunk_number)
 );
 
+-- Guarded insert: the unique key later includes the owner (005_multi_user.sql).
 INSERT INTO source_connections (provider, account_identifier)
-VALUES ('local', 'sample-folder')
-ON CONFLICT (provider, account_identifier) DO NOTHING;
+SELECT 'local', 'sample-folder'
+WHERE NOT EXISTS (
+    SELECT 1 FROM source_connections
+    WHERE provider = 'local' AND account_identifier = 'sample-folder'
+);

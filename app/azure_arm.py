@@ -8,6 +8,7 @@ import httpx
 ARM = "https://management.azure.com"
 SERVER_API_VERSION = "2024-08-01"
 METRICS_API_VERSION = "2018-01-01"
+JOB_API_VERSION = "2024-03-01"
 
 
 def _token() -> str:
@@ -49,6 +50,11 @@ def start_server(server_id: str) -> None:
 
 def stop_server(server_id: str) -> None:
     _call("POST", server_id, "/stop", {"api-version": SERVER_API_VERSION})
+
+
+def start_job(job_id: str) -> None:
+    """Start an execution of a Container Apps Job (needs the 'Container Apps Jobs Operator' role)."""
+    _call("POST", job_id, "/start", {"api-version": JOB_API_VERSION})
 
 
 def request_count(app_id: str, minutes: int) -> int:

@@ -73,11 +73,12 @@ def test_title_leg_query_has_matching_placeholders_and_params(monkeypatch):
 
     model = FakeModel()
     model.tokenizer = FakeTokenizer()
-    monkeypatch.setattr(search, "get_connection", lambda: FakeConnection())
+    monkeypatch.setattr(search, "get_connection", lambda user_id=None: FakeConnection())
     monkeypatch.setattr(search, "register_vector", lambda conn: None)
 
-    search.search_documents(model, "toters finance report", 5)
+    search.search_documents(model, "toters finance report", 5, user_id=7)
 
     assert len(executed) == 3
+    assert all(7 in params for _, params in executed)
     for query, params in executed:
         assert query.count("%s") == len(params)

@@ -77,6 +77,7 @@ _FILTER = """
     c.embedding IS NOT NULL
     AND c.embedding_model = %s
     AND d.ingestion_status = 'indexed'
+    AND c.user_id = %s
 """
 
 
@@ -84,6 +85,7 @@ def search_documents(
     model: SentenceTransformer,
     question: str,
     top_k: int,
+    user_id: int,
 ) -> list[dict]:
     """Hybrid retrieval: vector similarity plus keyword and title matches, fused.
 
@@ -119,7 +121,7 @@ def search_documents(
         rankings.append([row[3] for row in rows])
         weights.append(1.0)
 
-    with get_connection() as conn:
+    with get_connection(user_id) as conn:
         register_vector(conn)
 
         collect(
@@ -132,7 +134,7 @@ def search_documents(
                 ORDER BY c.embedding <=> %s, c.id
                 LIMIT %s;
                 """,
-                (query_vector, MODEL_NAME, query_vector, candidates),
+                (query_vector, MODEL_NAME, user_id, query_vector, candidates),
             ).fetchall()
         )
 
@@ -149,7 +151,7 @@ def search_documents(
                     ORDER BY ts_rank_cd(to_tsvector('simple', c.text), q) DESC, c.id
                     LIMIT %s;
                     """,
-                    (query_vector, " | ".join(keywords), MODEL_NAME, candidates),
+                    (query_vector, " | ".join(keywords), MODEL_NAME, user_id, candidates),
                 ).fetchall()
             )
 
@@ -176,6 +178,7 @@ def search_documents(
                     (
                         query_vector,
                         MODEL_NAME,
+                        user_id,
                         TITLE_CHUNKS,
                         patterns,
                         patterns,

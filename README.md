@@ -18,8 +18,8 @@ The application exposes the following endpoints:
 
 - `GET /health` — basic service health check
 - `GET /ready` — checks database availability and pgvector extension
-- `POST /search` — retrieve the most relevant document chunks for a question
-- `POST /chat` — retrieve relevant passages and generate a cited answer
+- `POST /search`, `POST /chat` — user-scoped retrieval / cited answers (need a signed user token, see "Multi-user mode (v2)")
+- `GET /me`, `POST /dropbox/authorize`, `POST /dropbox/callback`, `PUT /dropbox/folder`, `DELETE /dropbox`, `POST /sync`, `DELETE /me/documents` — per-user Dropbox connection and sync
 
 ## Architecture
 
@@ -127,6 +127,47 @@ Delete the job (credentials stored in it go away with it): `az containerapp job 
 - **Reset:** the manual workflow **Reset index (Azure)** (`reset-index-azure.yml`, environment `azure-test`) deletes **all** documents, chunks, embeddings and source connections (`TRUNCATE`; the schema stays, `init_db.py` re-creates the default local source). It only runs when `confirm` is exactly `RESET`, starts the database if auto-stop had stopped it, opens a temporary firewall rule for the runner and always removes it. The sample documents are deleted too: afterwards run **Ingest sample data (Azure)** and/or **Azure ingestion job**. There is no undo. Locally (Docker) use `reset_index.sh`.
 - **Diagnose:** the manual, read-only workflow **Azure diagnose** (`azure-diagnose.yml`, environment `azure-test`) runs `diagnose.py` inside Azure as a one-off run of the `rag-ingest` job (the job must exist). Given a `query` it prints document counts by status, failed file names, chunk/embedding counts, files whose title or text contain the query, and the top semantic hits with scores. It never prints document text. The result contains file names and titles, so the public GitHub log only shows a line count; read the output in Log Analytics (`ContainerAppConsoleLogs_CL`) or set `print_output=true` (anyone with a GitHub account can read workflow logs of a public repo). Use it to tell "not indexed" from "not retrieved".
 
+## Multi-user mode (v2)
+
+Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: code complete and tested locally (embedded PostgreSQL); **not deployed**, the Azure scripts/workflows are not yet updated for it (see "Deployment to-do").
+
+**Test accounts:** this is a small private pilot (about 10 people). If you want to try it, contact the owner for an invitation.
+
+### How it works
+
+- **Isolation:** every row of `source_connections`, `documents`, `chunks`, `dropbox_credentials`, `sync_jobs`, `chat_usage` carries `user_id`; PostgreSQL row-level security (policy `owner_only`) filters by the session setting `app.user_id`, and queries additionally filter on `user_id`. The API and worker must connect as the non-owner role `rag_runtime` (RLS does not apply to the table owner / admin). Migration: `sql/005_multi_user.sql`.
+- **Login:** Streamlit `st.login("microsoft")`; the UI signs the claims (`oid`, `tid`, `email`) into a 5-minute token (`USER_TOKEN_SECRET`, 32+ chars, shared by UI and API). The API accepts only invited, `active` users. Personal accounts are bound by e-mail on first login; work accounts must be invited with `--tid/--oid` (the e-mail claim is not trusted).
+- **Dropbox:** per-user OAuth (PKCE, scopes `files.metadata.read` and `files.content.read`, offline refresh token). The refresh token is stored encrypted (Fernet, `TOKEN_ENCRYPTION_KEY`; comma-separated keys allow rotation). The redirect URI is the public UI root (`DROPBOX_REDIRECT_URI`).
+- **Sync:** `POST /sync` queues a job (one open job per user); `sync_worker.py` (a Container Apps Job triggered by the API through `WORKER_JOB_RESOURCE_ID`, or run manually) syncs and embeds per user. Quotas per user: `chats_per_day` (default 200), `files_per_sync` (default 2000; larger folders are rejected, never truncated). Logs contain counts and error types, never paths or text.
+- **Audit:** `audit_log` records Dropbox connect/disconnect and document deletion (logins and syncs are not audited yet).
+
+### Local setup
+
+```powershell
+# .env: DATABASE_URL (runtime role), ADMIN_DATABASE_URL (owner), USER_TOKEN_SECRET, TOKEN_ENCRYPTION_KEY,
+#       DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REDIRECT_URI, AUTH_REDIRECT_URI, AUTH_COOKIE_SECRET, MS_CLIENT_ID, MS_CLIENT_SECRET
+python -c "from app.crypto import generate_key; print(generate_key())"     # TOKEN_ENCRYPTION_KEY
+$env:OWNER_EMAIL = 'you@example.org'; python init_db.py                    # migrate; existing data goes to the owner
+$env:RUNTIME_DB_PASSWORD = '<24+ chars>'; python setup_runtime_role.py     # login password for rag_runtime
+python manage_users.py invite friend@outlook.com                           # personal account
+python manage_users.py invite colleague@corp.com --tid <tenant-id> --oid <object-id>
+python manage_users.py list                                                # also: enable|disable <email>, quota <email> --chats-per-day N --files-per-sync N
+python sync_worker.py                                                       # process queued sync jobs
+```
+
+Register an **Entra app** (redirect URI `<ui-url>/oauth2callback`, web platform, accounts: personal Microsoft accounts) and a **Dropbox app** (scopes above, redirect URI = UI root). `MS_TENANT` defaults to `consumers`.
+
+### Limitations (read before inviting people)
+
+- **Work/school accounts:** Streamlit's login fails for the `common`/`organizations` endpoints (templated issuer, streamlit/streamlit#11391). Only personal Microsoft accounts work until that is solved; the allowlist logic for work accounts is in place.
+- **The operator can still read data.** Database administrators (Azure admin credentials) bypass RLS, the app owner can grant themselves access, and embeddings can be inverted. The baseline reduces exposure (runtime role without admin rights, encrypted tokens, audit log, no content in logs) but is not a technical guarantee. Tell users this.
+- Key Vault is not used yet (env key; `app/crypto.py` is the swap point). Dropbox apps in development mode may cap the number of linked users; check before inviting. OCR budget is per job, not per day. No connection pool; retrieval is serialised.
+- `evaluation/run_evaluation.py` uses only the API key and no longer works against v2 endpoints.
+
+### Deployment to-do (not done in this change)
+
+`deploy/azure.ps1` and the workflows must be extended with: `USER_TOKEN_SECRET`, `TOKEN_ENCRYPTION_KEY`, `DROPBOX_*`, `MS_*`, `AUTH_*` secrets; UI command `python ui_start.py`; a worker Container Apps Job (`python sync_worker.py`) plus the `Container Apps Jobs Operator` role for the API identity and `WORKER_JOB_RESOURCE_ID`; migration run with the admin URL; `DATABASE_URL` switched to `rag_runtime`.
+
 ## Environment and secrets
 
 This project expects configuration through environment variables or a local `.env` file (git-ignored). Keep secrets out of source control.
@@ -187,7 +228,7 @@ flowchart LR
 
 | Component | Role |
 |---|---|
-| `rag-ui` (Streamlit, `chat_ui.py`) | Only public endpoint. Password login (`APP_PASSWORD`), forwards questions to the API with the shared `X-API-Key`. |
+| `rag-ui` (Streamlit, `chat_ui.py`, started by `ui_start.py`) | Only public endpoint. Microsoft login (`st.login`), then forwards calls to the API with a short-lived signed user token plus the shared `X-API-Key`. |
 | `rag-api` (FastAPI, `app/`) | Internal ingress only. Embeds the question locally, runs the pgvector search, calls Azure OpenAI, validates the citations and returns the answer. |
 | PostgreSQL Flexible Server | Stores `documents`, `chunks` and the embeddings (`vector` extension, cosine distance). TLS is required. |
 | Azure OpenAI | Generates the cited JSON answer (`GENERATION_PROVIDER=azure_openai`). |
@@ -344,7 +385,7 @@ az group delete --name rg-rag-showcase --subscription <subscription-id>
 rm .env.azure
 ```
 
-Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on `/search` and `/chat`), `APP_PASSWORD` (optional UI password). See `.env.azure.example`.
+Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on the user endpoints). `APP_PASSWORD` was removed in v2 (Microsoft login replaces it). See `.env.azure.example` and "Multi-user mode (v2)".
 
 ## Repository conventions
 

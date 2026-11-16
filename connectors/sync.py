@@ -35,6 +35,7 @@ def sync(
     *,
     delete_removed: bool = False,
     allow_empty: bool = False,
+    log_paths: bool = True,
 ) -> SyncResult:
     """Make the database mirror the remote folder.
 
@@ -42,6 +43,7 @@ def sync(
     attempt failed). Files that vanished remotely are tombstoned (chunks deleted,
     status 'removed') or hard-deleted. Removal only happens after the remote
     listing completed successfully, so an API error never wipes the index.
+    `log_paths=False` keeps file names out of the logs (multi-user worker).
     """
     result = SyncResult()
     connection_id = store.ensure_connection(
@@ -76,7 +78,8 @@ def sync(
             # other messages could contain document content.
             detail = failure_detail(exc)
             suffix = f" | {detail}" if detail else ""
-            print(f"FAILED: {display_path(remote)}: {type(exc).__name__}{suffix}")
+            where = display_path(remote) if log_paths else "<file>"
+            print(f"FAILED: {where}: {type(exc).__name__}{suffix}")
             if isinstance(exc, PermanentDocumentError):
                 store.mark_failed(connection_id, remote, permanent=True)
                 result.unsupported.append(file_id)

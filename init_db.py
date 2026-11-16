@@ -1,13 +1,52 @@
+import os
 from pathlib import Path
 
 from app.db import get_connection
 
 sql_dir = Path(__file__).resolve().parent / "sql"
 
+# Migrations need the table owner; the app itself runs as the rag_runtime role.
+if os.getenv("ADMIN_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["ADMIN_DATABASE_URL"]
+
+
+def assign_owner(conn, email: str) -> None:
+    """Create the owner user and give them all data that has no owner yet."""
+    owner_id = conn.execute(
+        """
+        INSERT INTO users (email) VALUES (%s)
+        ON CONFLICT (lower(email)) DO UPDATE SET email = users.email
+        RETURNING id;
+        """,
+        (email.strip().lower(),),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE source_connections SET user_id = %s WHERE user_id IS NULL;", (owner_id,)
+    )
+    conn.execute(
+        """
+        UPDATE documents AS d SET user_id = s.user_id
+        FROM source_connections AS s
+        WHERE d.connection_id = s.id AND d.user_id IS NULL;
+        """
+    )
+    conn.execute(
+        """
+        UPDATE chunks AS c SET user_id = d.user_id
+        FROM documents AS d
+        WHERE c.document_id = d.id AND c.user_id IS NULL;
+        """
+    )
+    print(f"Existing data is owned by user id {owner_id}")
+
+
 with get_connection() as conn:
     for sql_path in sorted(sql_dir.glob("*.sql")):
         print(f"Applying {sql_path.name}")
         conn.execute(sql_path.read_text(encoding="utf-8"))
+
+    if os.getenv("OWNER_EMAIL"):
+        assign_owner(conn, os.environ["OWNER_EMAIL"])
 
     tables = conn.execute(
         """
