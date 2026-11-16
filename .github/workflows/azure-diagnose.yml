@@ -15,6 +15,10 @@ on:
         description: Deployment suffix (empty = AZURE_SUFFIX variable)
         default: ""
         type: string
+      print_output:
+        description: Print the result in this public log (contains file names and titles). Default off; read it in Log Analytics instead
+        default: false
+        type: boolean
       resource_group:
         description: Resource group of the deployment
         default: rg-rag-showcase
@@ -37,10 +41,10 @@ jobs:
       RESOURCE_GROUP: ${{ inputs.resource_group }}
       SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -66,6 +70,7 @@ jobs:
         shell: pwsh
         env:
           DIAG_QUERY: ${{ inputs.query }}
+          PRINT_OUTPUT: ${{ inputs.print_output }}
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt extension.dynamic_install_allow_preview=true | Out-Null
           $sub = $env:SUBSCRIPTION_ID; $rg = $env:RESOURCE_GROUP
@@ -101,5 +106,6 @@ jobs:
             Start-Sleep 30
           }
           if (-not $rows) { throw 'No log lines arrived yet; read them in the portal (rag-ingest, execution history).' }
-          $rows
+          if ($env:PRINT_OUTPUT -eq 'true') { $rows }
+          else { Write-Host "Result withheld from the public log ($(@($rows).Count) lines). Read execution $exec in Log Analytics (ContainerAppConsoleLogs_CL) or the portal, or rerun with print_output=true." }
           if ($status -ne 'Succeeded') { throw "Diagnostic run ended with status $status." }

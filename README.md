@@ -85,7 +85,7 @@ Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` 
    ```powershell
    curl.exe -u "<APP_KEY>:<APP_SECRET>" -d "code=<CODE>&grant_type=authorization_code" https://api.dropboxapi.com/oauth2/token
    ```
-   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the Azure workflow the folder input may be left empty: it then falls back to the `azure-test` environment **variable** `INGEST_FOLDER` (Settings → Environments → *Variables*). It is not a secret.
+   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the Azure workflow the folder is read from the `azure-test` environment **secret** `INGEST_FOLDER` (Settings → Environments → *Secrets*); there is no input for it, so GitHub masks the path in the public logs.
 
 ### Google Drive setup (service account, recommended)
 1. In Google Cloud Console create a project, enable the **Google Drive API**, create a **service account** and add a JSON key (store it securely; never commit it).
@@ -108,7 +108,7 @@ pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Prov
 # recurring (UTC cron): add -Schedule '0 3 * * *'; Google Drive: -Provider google_drive -Folder <folderId>
 ```
 
-Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) as `azure-test` environment secrets and the optional `INGEST_FOLDER` variable). The database must be running (auto-stop) when the job starts.
+Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) and `INGEST_FOLDER` as `azure-test` environment secrets). The database must be running (auto-stop) when the job starts.
 
 **Partial failures:** a file that cannot be processed (scanned PDF without text, encrypted PDF, unreadable file) is logged as `FAILED: <path>: <error type> | <reason>` (full Dropbox path, file name for other providers) (the reason, e.g. HTTP status, size, pages, is shown only for our own error types, never for messages that could contain document text) and retried on the next run, except permanent failures (shown as `Unsupported: <n>` in the summary), which are not retried until the file changes and do not fail the job. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. PDFs without a text layer are OCR'd when Document Intelligence is configured, otherwise they fail.
 
@@ -123,9 +123,9 @@ az monitor log-analytics query --workspace <workspace-customer-id> --analytics-q
 Delete the job (credentials stored in it go away with it): `az containerapp job delete --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --yes`.
 
 ### Change the Dropbox folder or reset the index (Azure)
-- **Change the folder:** set the `azure-test` variable `INGEST_FOLDER` (or type the folder when starting the workflow) and run **Azure ingestion job** again. Each folder is its own source; documents of the old folder stay indexed.
+- **Change the folder:** update the `azure-test` secret `INGEST_FOLDER` and run **Azure ingestion job** again. Each folder is its own source; documents of the old folder stay indexed.
 - **Reset:** the manual workflow **Reset index (Azure)** (`reset-index-azure.yml`, environment `azure-test`) deletes **all** documents, chunks, embeddings and source connections (`TRUNCATE`; the schema stays, `init_db.py` re-creates the default local source). It only runs when `confirm` is exactly `RESET`, starts the database if auto-stop had stopped it, opens a temporary firewall rule for the runner and always removes it. The sample documents are deleted too: afterwards run **Ingest sample data (Azure)** and/or **Azure ingestion job**. There is no undo. Locally (Docker) use `reset_index.sh`.
-- **Diagnose:** the manual, read-only workflow **Azure diagnose** (`azure-diagnose.yml`, environment `azure-test`) runs `diagnose.py` inside Azure as a one-off run of the `rag-ingest` job (the job must exist). Given a `query` it prints document counts by status, failed file names, chunk/embedding counts, files whose title or text contain the query, and the top semantic hits with scores. It never prints document text. Use it to tell "not indexed" from "not retrieved".
+- **Diagnose:** the manual, read-only workflow **Azure diagnose** (`azure-diagnose.yml`, environment `azure-test`) runs `diagnose.py` inside Azure as a one-off run of the `rag-ingest` job (the job must exist). Given a `query` it prints document counts by status, failed file names, chunk/embedding counts, files whose title or text contain the query, and the top semantic hits with scores. It never prints document text. The result contains file names and titles, so the public GitHub log only shows a line count; read the output in Log Analytics (`ContainerAppConsoleLogs_CL`) or set `print_output=true` (anyone with a GitHub account can read workflow logs of a public repo). Use it to tell "not indexed" from "not retrieved".
 
 ## Environment and secrets
 

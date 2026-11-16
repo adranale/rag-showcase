@@ -19,10 +19,6 @@ on:
         options:
           - dropbox
           - google_drive
-      folder:
-        description: Dropbox folder path (e.g. /Documents/rag) or Google Drive folder ID; empty = use the INGEST_FOLDER environment variable
-        default: ""
-        type: string
       schedule:
         description: Cron expression in UTC (5 fields); empty = manual trigger only
         default: ""
@@ -51,14 +47,15 @@ jobs:
     env:
       SUFFIX: ${{ inputs.suffix }}
       PROVIDER: ${{ inputs.provider }}
-      FOLDER: ${{ inputs.folder || vars.INGEST_FOLDER }}
+      # A secret, so GitHub masks the folder path in the logs; there is deliberately no input for it.
+      FOLDER: ${{ secrets.INGEST_FOLDER }}
       SCHEDULE: ${{ inputs.schedule }}
       RESOURCE_GROUP: ${{ inputs.resource_group }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
