@@ -199,7 +199,7 @@ foreach ($name in $sources.Keys) {
     $generated[$name] = $value
     $script:SecretValues.Add($value)
 }
-$secretNote = if ($newKeys) { "new/unsaved: $($newKeys -join ', ')" } else { 'all found' }
+$secretNote = if ($newKeys) { "not in the env file yet (reused from Azure when present, else generated): $($newKeys -join ', ')" } else { 'all found' }
 
 $runtimeUrl = $adminUrl -replace '^postgresql://ragadmin:[^@]+@', "postgresql://rag_runtime:$($generated['RUNTIME_DB_PASSWORD'])@"
 $script:SecretValues.Add($runtimeUrl)
@@ -355,3 +355,5 @@ Write-Host "  az containerapp job start --resource-group $ResourceGroup --name r
 Write-Host '  (add --tid/--oid for work accounts; output is in Log Analytics ContainerAppConsoleLogs_CL).'
 Write-Host 'The legacy rag-ingest job / ingest workflows write unowned documents that no user can see: do not use them in v2.'
 Write-Host 'Delete the rag-admin and rag-migrate jobs when not needed; they hold the admin connection string.'
+# A "secret not found" lookup leaves a non-zero native exit code; every real failure already threw.
+$global:LASTEXITCODE = 0
