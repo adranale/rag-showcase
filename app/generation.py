@@ -242,6 +242,7 @@ def generate_answer(question: str, passages: list[dict]) -> dict:
             "title": passage["title"],
             "source_url": passage["source_url"],
             "location": passage["location"],
+            "text": passage["text"],
         }
         for index, passage in enumerate(passages, start=1)
         if f"S{index}" in listed_ids

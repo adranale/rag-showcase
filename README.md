@@ -19,7 +19,8 @@ The application exposes the following endpoints:
 - `GET /health` — basic service health check
 - `GET /ready` — checks database availability and pgvector extension
 - `POST /search`, `POST /chat` — user-scoped retrieval / cited answers (need a signed user token, see "Multi-user mode (v2)")
-- `GET /me`, `POST /dropbox/authorize`, `POST /dropbox/callback`, `PUT /dropbox/folder`, `DELETE /dropbox`, `POST /sync`, `DELETE /me/documents` — per-user Dropbox connection and sync
+- `GET /me`, `POST /dropbox/authorize`, `POST /dropbox/callback`, `PUT /dropbox/folder`, `DELETE /dropbox`, `POST /sync`, `DELETE /me/documents` — per-user Dropbox connection and sync; `GET /me` also reports index statistics and the indexed Dropbox folders (including data imported before sign-in existed, which has no stored credentials)
+- `GET /documents/{id}/chunks` — passages of one of your documents in reading order (the UI's "View passages in context" dialog highlights the ones cited in an answer)
 
 ## Architecture
 
