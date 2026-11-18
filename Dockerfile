@@ -37,7 +37,7 @@ COPY --chown=appuser:appuser connectors/ ./connectors/
 COPY --chown=appuser:appuser sql/ ./sql/
 COPY --chown=appuser:appuser init_db.py ingest_text.py ingest_remote.py \
     ingest_job.py embed_chunks.py chunk_pdf.py extract_pdf.py \
-    sync_worker.py manage_users.py setup_runtime_role.py ./
+    sync_worker.py manage_users.py setup_runtime_role.py migrate_job.py ./
 
 USER appuser
 
