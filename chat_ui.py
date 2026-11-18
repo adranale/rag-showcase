@@ -1,10 +1,11 @@
 import os
-import secrets
 import time
 
 import httpx
 import streamlit as st
 from dotenv import load_dotenv
+
+from app.auth import AuthError, issue_user_token
 
 load_dotenv()
 
@@ -13,25 +14,84 @@ API_BASE_URL = os.getenv(
     "http://127.0.0.1:8000",
 ).rstrip("/")
 API_KEY = os.getenv("API_KEY")
-APP_PASSWORD = os.getenv("APP_PASSWORD")
 
 st.set_page_config(
     page_title="Document Assistant",
     page_icon="📚",
 )
 
-if APP_PASSWORD and not st.session_state.get("authenticated"):
+if not st.user.is_logged_in:
     st.title("Document Assistant")
-    entered = st.text_input("Password", type="password")
-
-    if entered:
-        if secrets.compare_digest(entered, APP_PASSWORD):
-            st.session_state.authenticated = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-
+    st.write(
+        "Ask questions about your own documents. Access is by invitation: "
+        "sign in with the Microsoft account that was invited."
+    )
+    st.button("Sign in with Microsoft", on_click=st.login, args=["microsoft"])
     st.stop()
+
+claims = {
+    "oid": st.user.get("oid") or st.user.get("sub"),
+    "tid": st.user.get("tid"),
+    "email": st.user.get("email") or st.user.get("preferred_username"),
+    "name": st.user.get("name"),
+}
+
+
+def api(method: str, path: str, **kwargs) -> httpx.Response:
+    """Call the API as the signed-in user (short-lived signed identity token)."""
+    headers = {"Authorization": f"Bearer {issue_user_token(claims)}"}
+    if API_KEY:
+        headers["X-API-Key"] = API_KEY
+    return httpx.request(
+        method,
+        f"{API_BASE_URL}{path}",
+        headers=headers,
+        timeout=kwargs.pop("timeout", httpx.Timeout(30.0, connect=5.0)),
+        **kwargs,
+    )
+
+
+def error_text(response: httpx.Response) -> str:
+    try:
+        detail = response.json().get("detail")
+    except ValueError:
+        detail = None
+    return f"API error {response.status_code}: {detail or 'Request failed.'}"
+
+
+def call(method: str, path: str, **kwargs):
+    """(data, error message); errors are shown to the user, never raised."""
+    try:
+        response = api(method, path, **kwargs)
+    except AuthError:
+        return None, "The server is not configured for user sign-in."
+    except httpx.RequestError:
+        return None, "Could not reach the API, or the request timed out."
+    if response.status_code >= 400:
+        return None, error_text(response)
+    try:
+        return response.json(), None
+    except ValueError:
+        return None, "The API returned an unexpected response."
+
+
+# Dropbox sends the browser back here after the user approved (or denied) access.
+params = st.query_params
+if "state" in params and ("code" in params or "error" in params):
+    if "code" in params:
+        _, problem = call(
+            "POST",
+            "/dropbox/callback",
+            json={"code": params["code"], "state": params["state"]},
+        )
+        st.session_state.flash = (
+            ("error", problem) if problem else ("success", "Dropbox connected.")
+        )
+    else:
+        st.session_state.flash = ("error", "Dropbox access was not granted.")
+    st.query_params.clear()
+    st.session_state.page = "My documents"
+    st.rerun()
 
 st.title("Document Assistant")
 st.caption(
@@ -43,6 +103,10 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 with st.sidebar:
+    st.caption(f"Signed in as {claims['email'] or claims['name']}")
+    st.button("Sign out", on_click=st.logout)
+    page = st.radio("Page", ["Chat", "My documents"], key="page", label_visibility="collapsed")
+
     st.header("Settings")
 
     top_k = st.slider(
@@ -57,6 +121,81 @@ with st.sidebar:
         st.rerun()
 
     st.caption(f"API: {API_BASE_URL}")
+
+
+def documents_page() -> None:
+    st.subheader("My documents")
+    st.caption(
+        "Your documents are stored and searched only for your account. Read-only "
+        "access to the Dropbox folder you choose; you can disconnect and delete "
+        "everything at any time. The service operator has technical access to the "
+        "database and could in principle read stored text."
+    )
+    if flash := st.session_state.pop("flash", None):
+        (st.success if flash[0] == "success" else st.error)(flash[1])
+
+    info, problem = call("GET", "/me")
+    if problem:
+        st.error(problem)
+        return
+    dropbox = info["dropbox"]
+
+    if not dropbox["connected"]:
+        st.write("Connect your Dropbox to build your own searchable document index.")
+        if st.button("Connect Dropbox"):
+            data, problem = call("POST", "/dropbox/authorize")
+            if problem:
+                st.error(problem)
+            else:
+                st.link_button("Continue to Dropbox", data["url"])
+        return
+
+    st.write(f"Dropbox connected. Folder: `{dropbox['folder'] or 'not chosen yet'}`")
+    folder = st.text_input(
+        "Dropbox folder", value=dropbox["folder"] or "", placeholder="/Documents/notes"
+    )
+    if st.button("Save folder"):
+        _, problem = call("PUT", "/dropbox/folder", json={"folder": folder})
+        if problem:
+            st.error(problem)
+        else:
+            st.success("Folder saved.")
+            st.rerun()
+
+    st.write(
+        f"Indexed documents: {dropbox['documents_indexed']} "
+        f"(skipped or failed: {dropbox['documents_skipped']}). "
+        f"Limit: {info['files_per_sync']} files per sync."
+    )
+    sync = info["sync"]
+    if sync:
+        line = f"Last sync: {sync['status']}"
+        if sync.get("message"):
+            line += f" - {sync['message']}"
+        st.caption(line)
+
+    left, right = st.columns(2)
+    if left.button("Sync now", disabled=not dropbox["folder"]):
+        _, problem = call("POST", "/sync")
+        (st.error(problem) if problem else st.info("Sync started; refresh in a minute."))
+    right.button("Refresh status")
+
+    with st.expander("Disconnect or delete"):
+        remove = st.checkbox("Also delete all my indexed documents")
+        if st.button("Disconnect Dropbox"):
+            _, problem = call("DELETE", "/dropbox", params={"delete_documents": remove})
+            if problem:
+                st.error(problem)
+            else:
+                st.rerun()
+        if st.button("Delete all my indexed documents"):
+            _, problem = call("DELETE", "/me/documents")
+            (st.error(problem) if problem else st.success("All your documents were deleted."))
+
+
+if page == "My documents":
+    documents_page()
+    st.stop()
 
 
 def display_message(message):
@@ -111,9 +250,9 @@ if question := st.chat_input("Ask a question about your documents"):
 
     try:
         with st.spinner("Searching documents and generating an answer..."):
-            response = httpx.post(
-                f"{API_BASE_URL}/chat",
-                headers={"X-API-Key": API_KEY} if API_KEY else {},
+            response = api(
+                "POST",
+                "/chat",
                 json={
                     "question": question,
                     "top_k": top_k,
@@ -153,6 +292,13 @@ if question := st.chat_input("Ask a question about your documents"):
                 "Could not reach the API, or the request timed out. "
                 "Check that FastAPI and the answer provider (Ollama / Azure OpenAI) are running."
             ),
+            "error": True,
+        }
+
+    except AuthError:
+        assistant_message = {
+            "role": "assistant",
+            "content": "The server is not configured for user sign-in.",
             "error": True,
         }
 

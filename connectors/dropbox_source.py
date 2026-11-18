@@ -51,6 +51,30 @@ class DropboxSource:
     def account_identifier(self) -> str:
         return self._folder or "/"
 
+    def check_folder(self) -> bool:
+        """True if the configured folder exists (the root always does)."""
+        if not self._folder:
+            return True
+        for attempt in range(2):
+            response = self._client.post(
+                f"{API_URL}/files/get_metadata",
+                headers={"Authorization": f"Bearer {self._token()}"},
+                json={"path": self._folder},
+            )
+            if response.status_code == 401 and attempt == 0:
+                self._access_token = None
+                continue
+            break
+        if response.status_code == 409:
+            return False
+        if response.status_code != 200:
+            raise ConnectorError(f"Dropbox request failed (HTTP {response.status_code})")
+        return response.json().get(".tag") == "folder"
+
+    def revoke(self) -> None:
+        """Invalidate the refresh token at Dropbox (best effort for the caller)."""
+        self._post(f"{API_URL}/auth/token/revoke")
+
     def _token(self) -> str:
         if self._access_token is None:
             response = self._client.post(

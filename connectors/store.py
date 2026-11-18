@@ -39,23 +39,33 @@ class DocumentStore(Protocol):
 
 
 class PostgresStore:
-    """Persists remote documents; every method runs in its own transaction."""
+    """Persists remote documents; every method runs in its own transaction.
+
+    With `user_id` all access is scoped to that user (row-level security) and new
+    connections are owned by the user; without it the legacy single-user mode is used.
+    """
+
+    def __init__(self, user_id: int | None = None) -> None:
+        self._user_id = user_id
+
+    def _connect(self):
+        return get_connection(self._user_id)
 
     def ensure_connection(self, provider: str, account_identifier: str) -> int:
-        with get_connection() as conn:
+        with self._connect() as conn:
             return conn.execute(
                 """
-                INSERT INTO source_connections (provider, account_identifier)
-                VALUES (%s, %s)
-                ON CONFLICT (provider, account_identifier)
+                INSERT INTO source_connections (user_id, provider, account_identifier)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, provider, account_identifier)
                 DO UPDATE SET account_identifier = EXCLUDED.account_identifier
                 RETURNING id;
                 """,
-                (provider, account_identifier),
+                (self._user_id, provider, account_identifier),
             ).fetchone()[0]
 
     def documents(self, connection_id: int) -> dict[str, StoredDocument]:
-        with get_connection() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT external_file_id, id, source_version, content_hash,
@@ -70,7 +80,7 @@ class PostgresStore:
     def save(
         self, connection_id: int, remote: RemoteFile, document: ChunkedDocument
     ) -> None:
-        with get_connection() as conn:
+        with self._connect() as conn:
             document_id = conn.execute(
                 """
                 INSERT INTO documents (
@@ -126,7 +136,7 @@ class PostgresStore:
                 )
 
     def update_version(self, document_id: int, version: str) -> None:
-        with get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE documents SET source_version = %s WHERE id = %s;",
                 (version, document_id),
@@ -138,7 +148,7 @@ class PostgresStore:
         # Permanent failures keep the remote version so they are skipped until it changes.
         status = "unsupported" if permanent else "failed"
         version = remote.version if permanent else None
-        with get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO documents (
@@ -166,7 +176,7 @@ class PostgresStore:
     def remove(self, connection_id: int, external_ids: list[str], delete: bool) -> None:
         if not external_ids:
             return
-        with get_connection() as conn:
+        with self._connect() as conn:
             if delete:
                 conn.execute(
                     """
@@ -197,7 +207,7 @@ class PostgresStore:
             )
 
     def mark_synced(self, connection_id: int) -> None:
-        with get_connection() as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE source_connections SET last_successful_sync = now() "
                 "WHERE id = %s;",
