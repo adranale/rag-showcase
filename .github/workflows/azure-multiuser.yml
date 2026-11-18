@@ -1,0 +1,88 @@
+name: Azure multi-user setup
+
+# Manual trigger only. Upgrades an existing deployment to multi-user mode (v2):
+# creates/updates the rag-migrate, rag-sync and rag-admin jobs and reconfigures rag-api
+# and rag-ui (see deploy/azure-multiuser.ps1). Preflight only by default. The CI identity
+# is scoped to the resource group and normally cannot create role assignments: the script
+# then warns, and the "Container Apps Jobs Operator" role must be granted manually
+# (the warning contains the exact command). Generated secrets live in the Container Apps
+# secrets (no file survives the runner).
+on:
+  workflow_dispatch:
+    inputs:
+      suffix:
+        description: Suffix used by the Azure deployment (3-10 chars a-z0-9)
+        required: true
+        type: string
+      image_sha:
+        description: Image tag (full commit SHA built by "Build image"); empty = this commit
+        default: ""
+        type: string
+      resource_group:
+        description: Resource group of the deployment
+        default: rg-rag-showcase
+        type: string
+      preflight_only:
+        description: Only run checks, change nothing
+        default: true
+        type: boolean
+      run_migration:
+        description: Run the schema migration job (before switching the apps)
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-multiuser
+  cancel-in-progress: false
+
+jobs:
+  multiuser:
+    runs-on: ubuntu-latest
+    environment: azure-test
+    env:
+      SUFFIX: ${{ inputs.suffix }}
+      RESOURCE_GROUP: ${{ inputs.resource_group }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ inputs.image_sha || github.sha }}
+    steps:
+      - name: Set secrets file path
+        shell: bash
+        run: echo "ENV_FILE=$RUNNER_TEMP/rag-azure-v2.env" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Azure login (OIDC)
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure multi-user mode
+        shell: pwsh
+        env:
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          MS_TENANT: ${{ vars.MS_TENANT }}
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          DOCINTEL_ENDPOINT: ${{ secrets.DOCINTEL_ENDPOINT }}
+          DOCINTEL_KEY: ${{ secrets.DOCINTEL_KEY }}
+          DOCINTEL_MAX_PAGES: ${{ vars.DOCINTEL_MAX_PAGES }}
+        run: >
+          ./deploy/azure-multiuser.ps1
+          -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
+          -Suffix $env:SUFFIX -ResourceGroup $env:RESOURCE_GROUP
+          -Image $env:IMAGE -EnvFile $env:ENV_FILE -AssumeYes
+          ${{ inputs.preflight_only && '-PreflightOnly' || '' }}
+          ${{ (!inputs.preflight_only && inputs.run_migration) && '-RunMigration' || '' }}
+
+      - name: Remove secrets file
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue $env:ENV_FILE

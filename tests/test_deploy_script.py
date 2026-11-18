@@ -98,3 +98,57 @@ def test_script_is_resumable_without_rotating_credentials(script_text):
     ):
         assert guard in script_text
     assert "Specified server name is already used" in script_text
+
+
+MULTIUSER = SCRIPT.parent / "azure-multiuser.ps1"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh not installed")
+def test_multiuser_script_parses():
+    command = (
+        "$e=$null;$t=$null;"
+        "[System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{MULTIUSER}',[ref]$t,[ref]$e)|Out-Null;"
+        "if($e.Count){$e|ForEach-Object Message;exit 1}"
+    )
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-Command", command], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stdout
+
+
+def test_multiuser_script_is_safe_and_ordered():
+    text = MULTIUSER.read_text(encoding="utf-8")
+
+    assert re.search(r"\[Parameter\(Mandatory\)\][^\n]*\$SubscriptionId", text)
+    assert "$azArgs += '--subscription', $SubscriptionId" in text
+    assert "-join ' '" not in text and "$($args" not in text
+    # Secrets are persisted before anything is changed, and never force-overwritten.
+    assert text.index("Add-Content -Path $envFile") < text.index("# --- Jobs")
+    assert "Set-Content" not in text and "-Force" not in text
+    # The migration must succeed before the apps are switched to the runtime role.
+    assert text.index("# --- Migration") < text.index("# --- rag-api")
+    assert "The apps were NOT switched" in text
+    # The UI start command must not contain arguments that start with a dash.
+    assert "--command python --args ui_start.py" in text
+    assert "APP_PASSWORD" in text
+
+
+def test_multiuser_workflow_is_pinned_and_environment_protected():
+    text = (WORKFLOW.parent / "azure-multiuser.yml").read_text(encoding="utf-8")
+
+    assert "environment: azure-test" in text
+    assert "preflight_only" in text and "default: true" in text
+    for line in text.splitlines():
+        if "uses:" in line:
+            assert re.search(r"@[0-9a-f]{40}\b", line), line
+
+
+def test_migrate_job_requires_admin_url_and_runtime_password(monkeypatch):
+    import migrate_job
+
+    monkeypatch.delenv("ADMIN_DATABASE_URL", raising=False)
+    monkeypatch.delenv("RUNTIME_DB_PASSWORD", raising=False)
+    with pytest.raises(SystemExit):
+        migrate_job.main()

@@ -129,7 +129,7 @@ Delete the job (credentials stored in it go away with it): `az containerapp job 
 
 ## Multi-user mode (v2)
 
-Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: code complete and tested locally (embedded PostgreSQL); **not deployed**, the Azure scripts/workflows are not yet updated for it (see "Deployment to-do").
+Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: code complete and tested locally (embedded PostgreSQL); the upgrade script is preflight-tested against Azure but **not yet applied** (see "Deploy v2 to Azure").
 
 **Test accounts:** this is a small private pilot (about 10 people). If you want to try it, contact the owner for an invitation.
 
@@ -164,9 +164,22 @@ Register an **Entra app** (redirect URI `<ui-url>/oauth2callback`, web platform,
 - Key Vault is not used yet (env key; `app/crypto.py` is the swap point). Dropbox apps in development mode may cap the number of linked users; check before inviting. OCR budget is per job, not per day. No connection pool; retrieval is serialised.
 - `evaluation/run_evaluation.py` uses only the API key and no longer works against v2 endpoints.
 
-### Deployment to-do (not done in this change)
+### Deploy v2 to Azure
 
-`deploy/azure.ps1` and the workflows must be extended with: `USER_TOKEN_SECRET`, `TOKEN_ENCRYPTION_KEY`, `DROPBOX_*`, `MS_*`, `AUTH_*` secrets; UI command `python ui_start.py`; a worker Container Apps Job (`python sync_worker.py`) plus the `Container Apps Jobs Operator` role for the API identity and `WORKER_JOB_RESOURCE_ID`; migration run with the admin URL; `DATABASE_URL` switched to `rag_runtime`.
+Prerequisite: the base deployment from "Deploy to Azure" (`azure.ps1`) exists. `azure-multiuser.ps1` then upgrades it in place (a fresh `azure.ps1` run still creates the v1-style UI with a password; run the upgrade right after it). Register the Entra app (redirect `https://<ui-fqdn>/oauth2callback`) and the Dropbox app (redirect `https://<ui-fqdn>/`) first; the UI FQDN is printed by the preflight.
+
+```powershell
+$env:MS_CLIENT_ID = '...'; $env:MS_CLIENT_SECRET = '...'          # Entra app (personal accounts)
+$env:DROPBOX_APP_KEY = '...'; $env:DROPBOX_APP_SECRET = '...'
+$env:OWNER_EMAIL = 'you@example.org'                              # receives the existing documents
+# optional OCR for the worker: DOCINTEL_ENDPOINT, DOCINTEL_KEY, DOCINTEL_MAX_PAGES
+pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -PreflightOnly   # read-only
+pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -RunMigration   # changes Azure
+```
+
+It creates the manual jobs `rag-migrate` (schema, `rag_runtime` role, owner assignment), `rag-sync` (worker) and `rag-admin` (`manage_users.py`); runs the migration and only then switches `rag-api` (connects as `rag_runtime` via the new `db-runtime-url` secret; user-token, token-encryption, Dropbox settings; system identity with `Container Apps Jobs Operator` on `rag-sync`, which needs Owner/User Access Administrator, otherwise it prints the exact command) and `rag-ui` (`python ui_start.py`, Microsoft login, `APP_PASSWORD` removed). Generated secrets are saved to the git-ignored `.env.azure.v2` (never rotated on rerun; rotating `TOKEN_ENCRYPTION_KEY` makes stored Dropbox tokens unreadable). The workflow **Azure multi-user setup** (`azure-multiuser.yml`, environment `azure-test`, preflight by default) does the same from GitHub; add the secrets `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `OWNER_EMAIL` and optionally the variable `MS_TENANT`.
+
+Invite users (they cannot log in otherwise): `az containerapp job start -g <rg> -n rag-admin --command python --args manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The legacy `rag-ingest` job and the sample/reset workflows use the admin connection and write unowned documents that no user can see: do not use them in v2. Not yet verified on Azure: the full run (only the read-only preflight was tested), the role name `Container Apps Jobs Operator`, and the `rag-sync` trigger from the API.
 
 ## Environment and secrets
 
