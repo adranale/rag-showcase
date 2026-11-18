@@ -138,16 +138,45 @@ def status(user: User) -> dict:
         counts = conn.execute(
             """
             SELECT count(*) FILTER (WHERE ingestion_status = 'indexed'),
-                   count(*) FILTER (WHERE ingestion_status IN ('failed', 'unsupported'))
+                   count(*) FILTER (WHERE ingestion_status IN ('failed', 'unsupported')),
+                   max(indexed_at)
             FROM documents WHERE user_id = %s;
             """,
             (user.id,),
         ).fetchone()
+        chunk_count = conn.execute(
+            "SELECT count(*) FROM chunks WHERE user_id = %s;", (user.id,)
+        ).fetchone()[0]
+        # Dropbox folders that were indexed, whether or not this account is connected
+        # (data imported before sign-in existed has no stored credentials).
+        sources = conn.execute(
+            """
+            SELECT s.account_identifier, s.last_successful_sync,
+                   count(d.id) FILTER (WHERE d.ingestion_status = 'indexed'),
+                   count(d.id) FILTER (WHERE d.ingestion_status IN ('failed', 'unsupported'))
+            FROM source_connections AS s
+            LEFT JOIN documents AS d ON d.connection_id = s.id
+            WHERE s.user_id = %s AND s.provider = 'dropbox'
+            GROUP BY s.id ORDER BY s.id;
+            """,
+            (user.id,),
+        ).fetchall()
     return {
         "connected": row is not None,
         "folder": row[0] if row else None,
         "documents_indexed": counts[0],
         "documents_skipped": counts[1],
+        "last_indexed_at": counts[2],
+        "chunks": chunk_count,
+        "sources": [
+            {
+                "folder": source[0],
+                "last_sync": source[1],
+                "documents_indexed": source[2],
+                "documents_skipped": source[3],
+            }
+            for source in sources
+        ],
     }
 
 

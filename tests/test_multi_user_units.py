@@ -146,6 +146,16 @@ def test_me_endpoint(client, monkeypatch):
     assert response.json()["email"] == "a@b.c"
 
 
+def test_document_chunks_endpoint(client, monkeypatch):
+    from app import documents
+
+    found = {"document_id": 7, "title": "t", "source_url": None, "chunks": []}
+    monkeypatch.setattr(documents, "document_chunks", lambda user, doc_id: found)
+    assert client.get("/documents/7/chunks").json() == found
+    monkeypatch.setattr(documents, "document_chunks", lambda user, doc_id: None)
+    assert client.get("/documents/8/chunks").status_code == 404
+
+
 def test_chat_quota_maps_to_429(client, monkeypatch):
     def deny(user):
         raise quota.QuotaExceeded("limit")
@@ -162,6 +172,7 @@ def test_endpoints_reject_anonymous_calls():
         ("get", "/me"),
         ("post", "/sync"),
         ("delete", "/me/documents"),
+        ("get", "/documents/1/chunks"),
         ("post", "/dropbox/authorize"),
     ]:
         assert getattr(client, method)(path).status_code == 401, path

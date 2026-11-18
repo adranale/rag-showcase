@@ -213,6 +213,31 @@ def test_store_creates_user_owned_documents(admin_url, runtime):
     assert store_b.documents(connection_id) == {}
 
 
+def test_document_chunks_and_status_are_scoped_to_the_owner(admin_url, runtime):
+    from app import documents, dropbox_oauth
+
+    a, b = make_user(admin_url), make_user(admin_url)
+    add_document(admin_url, a, "alpha")
+    add_document(admin_url, b, "beta")
+    user_a, user_b = load_user(admin_url, a), load_user(admin_url, b)
+
+    with psycopg.connect(admin_url) as conn:
+        document_id = conn.execute(
+            "SELECT id FROM documents WHERE user_id = %s;", (a,)
+        ).fetchone()[0]
+
+    result = documents.document_chunks(user_a, document_id)
+    assert [c["text"] for c in result["chunks"]] == ["secret text of alpha"]
+    assert documents.document_chunks(user_b, document_id) is None
+
+    # Indexed data without stored credentials still shows up (pre-v2 import).
+    status = dropbox_oauth.status(user_a)
+    assert status["connected"] is False
+    assert status["documents_indexed"] == 1 and status["chunks"] == 1
+    assert [s["folder"] for s in status["sources"]] == ["/alpha"]
+    assert status["sources"][0]["documents_indexed"] == 1
+
+
 def test_authenticate_binds_personal_account_once(admin_url, runtime):
     from app import users
 

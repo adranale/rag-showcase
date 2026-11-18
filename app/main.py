@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
-from app import dropbox_oauth, jobs, users, wake
+from app import documents, dropbox_oauth, jobs, users, wake
 from app.auth import current_user
 from app.crypto import CryptoError
 from app.db import get_connection
@@ -254,6 +254,15 @@ def start_sync(user: User = Depends(current_user)):
     if created:
         jobs.trigger_worker()
     return _public_job(job)
+
+
+@app.get("/documents/{document_id}/chunks")
+def document_text(document_id: int, user: User = Depends(current_user)):
+    with _service_errors("Documents"):
+        result = documents.document_chunks(user, document_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return result
 
 
 @app.delete("/me/documents")
