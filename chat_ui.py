@@ -20,6 +20,14 @@ st.set_page_config(
     page_icon="📚",
 )
 
+if not hasattr(st.user, "is_logged_in"):
+    # Streamlit only provides login state when [auth] is configured (ui_start.py writes it).
+    st.error(
+        "Login is not configured. Start the UI with `python ui_start.py` and set "
+        "AUTH_REDIRECT_URI, AUTH_COOKIE_SECRET, MS_CLIENT_ID and MS_CLIENT_SECRET."
+    )
+    st.stop()
+
 if not st.user.is_logged_in:
     st.title("Document Assistant")
     st.write(

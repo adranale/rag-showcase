@@ -242,18 +242,20 @@ if ($newKeys) {
 function Set-Job([string]$Name, [string[]]$Command, [string[]]$Secrets, [string[]]$EnvVars, [string]$Memory = '2Gi') {
     $exists = Test-Exists "check job $Name" containerapp job show --resource-group $ResourceGroup --name $Name
     $commandArgs = @($Command[1..($Command.Count - 1)])
+    # Consumption profile only allows fixed CPU/memory pairs (0.5/1Gi, 1/2Gi).
+    $cpu = if ($Memory -eq '1Gi') { '0.5' } else { '1' }
     if ($exists) {
         Write-Host "Updating job $Name..."
         Invoke-Az "set secrets of job $Name" containerapp job secret set --resource-group $ResourceGroup --name $Name --secrets @Secrets --output none | Out-Null
         Invoke-Az "update job $Name" containerapp job update --resource-group $ResourceGroup --name $Name --image $Image `
-            --cpu 1 --memory $Memory --replica-timeout 3600 --replica-retry-limit 0 `
+            --cpu $cpu --memory $Memory --replica-timeout 3600 --replica-retry-limit 0 `
             --command $Command[0] --args @commandArgs --replace-env-vars @EnvVars --output none | Out-Null
     }
     else {
         Write-Host "Creating job $Name..."
         Invoke-Az "create job $Name" containerapp job create --resource-group $ResourceGroup --environment $EnvironmentName --name $Name `
             --image $Image --trigger-type Manual --replica-timeout 3600 --replica-retry-limit 0 `
-            --replica-completion-count 1 --parallelism 1 --cpu 1 --memory $Memory `
+            --replica-completion-count 1 --parallelism 1 --cpu $cpu --memory $Memory `
             --command $Command[0] --args @commandArgs --secrets @Secrets --env-vars @EnvVars --output none | Out-Null
     }
 }
