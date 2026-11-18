@@ -1,4 +1,5 @@
 import html
+import logging
 import os
 import time
 
@@ -23,10 +24,11 @@ st.set_page_config(
 
 if not hasattr(st.user, "is_logged_in"):
     # Streamlit only provides login state when [auth] is configured (ui_start.py writes it).
-    st.error(
-        "Login is not configured. Start the UI with `python ui_start.py` and set "
+    logging.getLogger(__name__).error(
+        "Login is not configured: start the UI with ui_start.py and set "
         "AUTH_REDIRECT_URI, AUTH_COOKIE_SECRET, MS_CLIENT_ID and MS_CLIENT_SECRET."
     )
+    st.error("Sign-in is temporarily unavailable. Please contact the administrator.")
     st.stop()
 
 if not st.user.is_logged_in:
