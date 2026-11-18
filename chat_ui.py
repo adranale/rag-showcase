@@ -62,6 +62,38 @@ def api(method: str, path: str, **kwargs) -> httpx.Response:
     )
 
 
+STARTUP_RETRIES = 6
+STARTUP_WAIT_SECONDS = 10
+
+
+def api_retry(method: str, path: str, **kwargs) -> httpx.Response:
+    """Like api(), but waits for a scaled-to-zero API / stopped database to start.
+
+    Retries only when the request cannot have been processed (connection failure or
+    503); GET requests are also retried after a timeout.
+    """
+    notice = st.empty()
+    try:
+        for attempt in range(1, STARTUP_RETRIES + 1):
+            last = attempt == STARTUP_RETRIES
+            try:
+                response = api(method, path, **kwargs)
+                if response.status_code != 503 or last:
+                    return response
+            except httpx.RequestError as exc:
+                retryable = method == "GET" or isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
+                )
+                if not retryable or last:
+                    raise
+            notice.info(
+                f"The service is starting up, retrying... (attempt {attempt}/{STARTUP_RETRIES})"
+            )
+            time.sleep(STARTUP_WAIT_SECONDS)
+    finally:
+        notice.empty()
+
+
 def error_text(response: httpx.Response) -> str:
     try:
         detail = response.json().get("detail")
@@ -73,7 +105,7 @@ def error_text(response: httpx.Response) -> str:
 def call(method: str, path: str, **kwargs):
     """(data, error message); errors are shown to the user, never raised."""
     try:
-        response = api(method, path, **kwargs)
+        response = api_retry(method, path, **kwargs)
     except AuthError:
         return None, "The server is not configured for user sign-in."
     except httpx.RequestError:
@@ -362,7 +394,7 @@ if question := st.chat_input("Ask a question about your documents"):
 
     try:
         with st.spinner("Searching documents and generating an answer..."):
-            response = api(
+            response = api_retry(
                 "POST",
                 "/chat",
                 json={
