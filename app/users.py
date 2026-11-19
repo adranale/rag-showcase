@@ -10,7 +10,7 @@ from app.db import get_connection
 # their immutable tenant/object ID instead (manage_users.py invite --tid --oid).
 PERSONAL_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
 
-_COLUMNS = "id, email, status, chats_per_day, files_per_sync"
+_COLUMNS = "id, email, status, chats_per_day, files_per_sync, is_admin"
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class User:
     status: str
     chats_per_day: int
     files_per_sync: int
+    is_admin: bool = False
 
 
 def authenticate(claims: dict) -> User | None:
@@ -66,3 +67,12 @@ def audit(user_id: int, action: str, detail: str | None = None) -> None:
             "INSERT INTO audit_log (user_id, action, detail) VALUES (%s, %s, %s);",
             (user_id, action, detail),
         )
+
+
+def admin_emails() -> list[str]:
+    """E-mail addresses of the active admins (recipients of notifications)."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT email FROM users WHERE is_admin AND status = 'active' ORDER BY id;"
+        ).fetchall()
+    return [row[0] for row in rows]

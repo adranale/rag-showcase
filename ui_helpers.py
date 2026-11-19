@@ -1,12 +1,58 @@
 """Streamlit-free helpers of chat_ui.py (importable and unit-testable)."""
 
+import re
 import time
 from collections.abc import Callable
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
 STARTUP_RETRIES = 6
 STARTUP_WAIT_SECONDS = 10
+
+INVITE_COOKIE = "rag_invite"
+_INVITE_CODE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+SUBMIT_MESSAGES = {
+    "created": ("success", "Request sent. You can use the assistant once it is approved."),
+    "pending": ("info", "Your request is already waiting for approval."),
+    "already_user": ("info", "You already have an account. Reload the page."),
+    "invalid_code": ("error", "This invite link is not valid (any more). Ask for a new one."),
+    "refused_recently": ("warning", "Your last request was declined. Try again in a week."),
+    "too_many": ("warning", "Too many open requests right now. Please try again later."),
+}
+
+
+def extract_invite_code(value: str | None) -> str | None:
+    """The invite code from a code or a pasted invite link; None if it is not valid."""
+    value = (value or "").strip()
+    if "invite=" in value:
+        value = (parse_qs(urlsplit(value).query).get("invite") or [""])[0]
+    return value if _INVITE_CODE.fullmatch(value) else None
+
+
+def invite_cookie_script(code: str | None) -> str:
+    """JavaScript that keeps the invite code across the Microsoft sign-in redirect.
+
+    Streamlit returns to "/" after login, dropping the ?invite= parameter; the app
+    reads the cookie back with st.context.cookies. Only validated codes are embedded;
+    None clears the cookie.
+    """
+    if code is not None and not _INVITE_CODE.fullmatch(code):
+        raise ValueError("invalid invite code")
+    value, age = (code, 3600) if code else ("", 0)
+    return (
+        '<div style="display:none"></div><script>'
+        f'document.cookie = "{INVITE_COOKIE}={value}; path=/; max-age={age}; '
+        'secure; samesite=lax";</script>'
+    )
+
+
+def invite_link(redirect_uri: str, code: str) -> str:
+    """UI start page (from the login redirect URI .../oauth2callback) with the code."""
+    parts = urlsplit(redirect_uri)
+    base = f"{parts.scheme}://{parts.netloc}/" if parts.netloc else "/"
+    return f"{base}?invite={code}"
 
 
 def request_with_retry(

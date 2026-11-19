@@ -11,11 +11,11 @@ if os.getenv("ADMIN_DATABASE_URL"):
 
 
 def assign_owner(conn, email: str) -> None:
-    """Create the owner user and give them all data that has no owner yet."""
+    """Create the owner user (an admin) and give them all data that has no owner yet."""
     owner_id = conn.execute(
         """
-        INSERT INTO users (email) VALUES (%s)
-        ON CONFLICT (lower(email)) DO UPDATE SET email = users.email
+        INSERT INTO users (email, is_admin) VALUES (%s, true)
+        ON CONFLICT (lower(email)) DO UPDATE SET is_admin = true
         RETURNING id;
         """,
         (email.strip().lower(),),

@@ -21,6 +21,8 @@ The application exposes the following endpoints:
 - `POST /search`, `POST /chat` — user-scoped retrieval / cited answers (need a signed user token, see "Multi-user mode (v2)")
 - `GET /me`, `POST /dropbox/authorize`, `POST /dropbox/callback`, `PUT /dropbox/folder`, `DELETE /dropbox`, `POST /sync`, `DELETE /me/documents` — per-user Dropbox connection and sync; `GET /me` also reports index statistics and the indexed Dropbox folders (including data imported before sign-in existed, which has no stored credentials)
 - `GET /documents/{id}/chunks` — passages of one of your documents in reading order (the UI's "View passages in context" dialog highlights the ones cited in an answer)
+- `GET /access-request`, `POST /access-request` — status of / send an access request with the invite code (signed-in Microsoft identity, no account needed)
+- `GET /admin/requests`, `POST /admin/requests/{id}/approve|refuse`, `GET /admin/users`, `PUT /admin/users/{id}/status`, `GET /admin/invite`, `POST /admin/invite` (new code) — admins only
 
 ## Architecture
 
@@ -111,6 +113,8 @@ pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Prov
 
 Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) and `INGEST_FOLDER` as `azure-test` environment secrets). The database must be running (auto-stop) when the job starts.
 
+> **Legacy (single-user, v1):** in multi-user mode (v2) this job writes documents without an owner that no user can see; users sync their own Dropbox from the UI instead. The `azure-test` secrets `DROPBOX_REFRESH_TOKEN` and `INGEST_FOLDER` were removed from the deployment environment; add them again only if you run this workflow against a v1 deployment.
+
 **Partial failures:** a file that cannot be processed (scanned PDF without text, encrypted PDF, unreadable file) is logged as `FAILED: <path>: <error type> | <reason>` (full Dropbox path, file name for other providers) (the reason, e.g. HTTP status, size, pages, is shown only for our own error types, never for messages that could contain document text) and retried on the next run, except permanent failures (shown as `Unsupported: <n>` in the summary), which are not retried until the file changes and do not fail the job. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. PDFs without a text layer are OCR'd when Document Intelligence is configured, otherwise they fail.
 
 View executions and logs:
@@ -130,17 +134,18 @@ Delete the job (credentials stored in it go away with it): `az containerapp job 
 
 ## Multi-user mode (v2)
 
-Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: code complete and tested locally (embedded PostgreSQL); the upgrade script is preflight-tested against Azure but **not yet applied** (see "Deploy v2 to Azure").
+Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: released as v2.0.0 and running on the Azure test deployment; the invite link / access requests below come after v2.0.0.
 
-**Test accounts:** this is a small private pilot (about 10 people). If you want to try it, contact the owner for an invitation.
+**Test accounts:** this is a small private pilot (about 10 people). If you want to try it, contact the owner for an invite link.
 
 ### How it works
 
 - **Isolation:** every row of `source_connections`, `documents`, `chunks`, `dropbox_credentials`, `sync_jobs`, `chat_usage` carries `user_id`; PostgreSQL row-level security (policy `owner_only`) filters by the session setting `app.user_id`, and queries additionally filter on `user_id`. The API and worker must connect as the non-owner role `rag_runtime` (RLS does not apply to the table owner / admin). Migration: `sql/005_multi_user.sql`.
 - **Login:** Streamlit `st.login("microsoft")`; the UI signs the claims (`oid`, `tid`, `email`) into a 5-minute token (`USER_TOKEN_SECRET`, 32+ chars, shared by UI and API). The API accepts only invited, `active` users. Personal accounts are bound by e-mail on first login; work accounts must be invited with `--tid/--oid` (the e-mail claim is not trusted).
+- **Invite link and access requests:** admins (`users.is_admin`; `OWNER_EMAIL` becomes admin in `init_db.py`, others via `manage_users.py admin <email>`) see an **Admin** page with one shared invite link (`<ui>/?invite=<code>`, regenerate to invalidate it), the open requests (approve/refuse) and the user list (enable/disable). Whoever opens the link signs in with Microsoft and sends a request with an optional message; the code survives the sign-in redirect in a 1-hour cookie (or can be pasted). Approval creates an `active` user bound to that exact Microsoft identity (tenant + object ID). Refused people can ask again after 7 days; at most 50 requests can be open. With Azure Communication Services configured (`ACS_EMAIL_CONNECTION_STRING`, `ACS_EMAIL_SENDER`, `UI_BASE_URL`), every admin gets an e-mail per new request (name, address, message, link). The runtime role has no access to the request table: everything goes through `SECURITY DEFINER` functions (`sql/006_access_requests.sql`) that check the caller's admin flag via `app.user_id`, the same trust boundary as row-level security.
 - **Dropbox:** per-user OAuth (PKCE, scopes `files.metadata.read` and `files.content.read`, offline refresh token). The refresh token is stored encrypted (Fernet, `TOKEN_ENCRYPTION_KEY`; comma-separated keys allow rotation). The redirect URI is the public UI root (`DROPBOX_REDIRECT_URI`).
 - **Sync:** `POST /sync` queues a job (one open job per user); `sync_worker.py` (a Container Apps Job triggered by the API through `WORKER_JOB_RESOURCE_ID`, or run manually) syncs and embeds per user. Quotas per user: `chats_per_day` (default 200), `files_per_sync` (default 2000; larger folders are rejected, never truncated). Logs contain counts and error types, never paths or text.
-- **Audit:** `audit_log` records Dropbox connect/disconnect and document deletion (logins and syncs are not audited yet).
+- **Audit:** `audit_log` records Dropbox connect/disconnect, document deletion, access requests and admin decisions, user enable/disable and invite-link changes (logins and syncs are not audited yet).
 
 ### Local setup
 
@@ -153,6 +158,7 @@ $env:RUNTIME_DB_PASSWORD = '<24+ chars>'; python setup_runtime_role.py     # log
 python manage_users.py invite friend@outlook.com                           # personal account
 python manage_users.py invite colleague@corp.com --tid <tenant-id> --oid <object-id>
 python manage_users.py list                                                # also: enable|disable <email>, quota <email> --chats-per-day N --files-per-sync N
+python manage_users.py admin you@outlook.com                               # admin page (invite link, requests); unadmin <email> removes it
 python sync_worker.py                                                       # process queued sync jobs
 ```
 
@@ -176,11 +182,14 @@ $env:OWNER_EMAIL = 'you@example.org'                              # receives the
 # optional OCR for the worker: DOCINTEL_ENDPOINT, DOCINTEL_KEY, DOCINTEL_MAX_PAGES
 pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -PreflightOnly   # read-only
 pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -RunMigration   # changes Azure
+# add -EmailNotifications to e-mail admins about access requests (see below)
 ```
 
 It creates the manual jobs `rag-migrate` (schema, `rag_runtime` role, owner assignment), `rag-sync` (worker) and `rag-admin` (`manage_users.py`); runs the migration and only then switches `rag-api` (connects as `rag_runtime` via the new `db-runtime-url` secret; user-token, token-encryption, Dropbox settings; system identity with `Container Apps Jobs Operator` on `rag-sync`, which needs Owner/User Access Administrator, otherwise it prints the exact command) and `rag-ui` (`python ui_start.py`, Microsoft login, `APP_PASSWORD` removed). Generated secrets are saved to the git-ignored `.env.azure.v2` (never rotated on rerun; rotating `TOKEN_ENCRYPTION_KEY` makes stored Dropbox tokens unreadable). The workflow **Azure multi-user setup** (`azure-multiuser.yml`, environment `azure-test`, preflight by default) does the same from GitHub; add the secrets `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `OWNER_EMAIL` and optionally the variable `MS_TENANT`.
 
-Invite users (they cannot log in otherwise): `az containerapp job start -g <rg> -n rag-admin --command python --args manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The legacy `rag-ingest` job and the sample/reset workflows use the admin connection and write unowned documents that no user can see: do not use them in v2. Not yet verified on Azure: the full run (only the read-only preflight was tested), the role name `Container Apps Jobs Operator`, and the `rag-sync` trigger from the API.
+**E-mail notifications** (`-EmailNotifications`; workflow input `email_notifications`, default on): the script creates or reuses an Email Communication Service `acs-email-<suffix>` with an Azure-managed domain (sender `DoNotReply@<id>.azurecomm.net`, no DNS needed) and a Communication Service `acs-rag-<suffix>` (both `global`, data location Europe), and gives `rag-api` the connection string (secret `acs-email-connection`), `ACS_EMAIL_SENDER` and `UI_BASE_URL`. A subscription owner must register the resource provider once (the CI identity cannot): `az provider register --namespace Microsoft.Communication --subscription <id> --wait`. Cost: no fixed fee, charged per e-mail sent (check current ACS e-mail pricing); Azure-managed domains have low sending limits, and their mail may land in spam until the recipient marks it as safe.
+
+Invite users with the invite link on the **Admin** page (the `OWNER_EMAIL` account is admin). Fallback without an admin: `az containerapp job start -g <rg> -n rag-admin --command python --args manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The legacy `rag-ingest` job and the sample/reset workflows use the admin connection and write unowned documents that no user can see: do not use them in v2. Verified on Azure: the full upgrade run, the migration and the `Container Apps Jobs Operator` role assignment. Not yet verified: the `rag-sync` trigger from the API.
 
 ## Environment and secrets
 
@@ -367,7 +376,7 @@ In GitHub: Settings → Environments → create `azure-test` (add yourself as re
 | `AZURE_CLIENT_ID` | app registration (client) ID from above |
 | `AZURE_TENANT_ID` | Azure tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | the NGO subscription ID |
-| `RAG_UI_PASSWORD` | UI login password (8–64 chars: letters, digits, `. _ ~ + @ #` or `-`) |
+| `RAG_UI_PASSWORD` | UI login password (8–64 chars: letters, digits, `. _ ~ + @ #` or `-`); v1 only — v2 uses Microsoft sign-in and the secret was removed from the deployment environment |
 
 The credentials generated in CI are discarded with the runner. Retrieve them later from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`). The workflow runs the same script, so it is resumable too: after a failed run, run it again with the same `suffix` and it continues with what is missing, taking the credentials from the existing `rag-api` secrets. Deleting the resource group is only needed to start from scratch. To delete it from GitHub, run the **Destroy Azure deployment** workflow (same `azure-test` environment/approval; you must retype the resource group name to confirm).
 
@@ -410,11 +419,9 @@ Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY`
 
 ## Release status
 
-This repository is currently tagged as a pre-release:
+Latest release: **v2.0.0** (multi-user mode). Releases are tagged `vX.Y.Z` on `main`; see the GitHub releases for the notes.
 
-- `v0.1.0-pre-release`
-
-The `main` branch is kept stable while ongoing work continues on the `dev` branch.
+The `main` branch is kept stable while ongoing work continues on feature branches.
 
 ## Project status
 

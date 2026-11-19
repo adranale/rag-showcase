@@ -8,7 +8,16 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from app.auth import AuthError, issue_user_token
-from ui_helpers import describe_location, group_citations, request_with_retry
+from ui_helpers import (
+    INVITE_COOKIE,
+    SUBMIT_MESSAGES,
+    describe_location,
+    extract_invite_code,
+    group_citations,
+    invite_cookie_script,
+    invite_link,
+    request_with_retry,
+)
 
 load_dotenv()
 
@@ -32,12 +41,24 @@ if not hasattr(st.user, "is_logged_in"):
     st.error("Sign-in is temporarily unavailable. Please contact the administrator.")
     st.stop()
 
+invite_code = extract_invite_code(st.query_params.get("invite"))
+
 if not st.user.is_logged_in:
     st.title("Document Assistant")
-    st.write(
-        "Ask questions about your own documents. Access is by invitation: "
-        "sign in with the Microsoft account that was invited."
-    )
+    if invite_code:
+        # Kept in a short-lived cookie: the sign-in redirect drops the URL parameter.
+        st.html(invite_cookie_script(invite_code), unsafe_allow_javascript=True)
+        st.write(
+            "You have been invited to the Document Assistant. Sign in with your personal "
+            "Microsoft account (e.g. outlook.com, hotmail.com or live.com), then send "
+            "your access request."
+        )
+    else:
+        st.write(
+            "Ask questions about your own documents. Access is by invitation: "
+            "sign in with the Microsoft account that was invited, or open the invite "
+            "link you received."
+        )
     st.button("Sign in with Microsoft", on_click=st.login, args=["microsoft"])
     st.stop()
 
@@ -82,20 +103,108 @@ def error_text(response: httpx.Response) -> str:
     return f"API error {response.status_code}: {detail or 'Request failed.'}"
 
 
-def call(method: str, path: str, **kwargs):
-    """(data, error message); errors are shown to the user, never raised."""
+def call_with_status(method: str, path: str, **kwargs):
+    """(HTTP status or None, data, error message); never raises."""
     try:
         response = api_retry(method, path, **kwargs)
     except AuthError:
-        return None, "The server is not configured for user sign-in."
+        return None, None, "The server is not configured for user sign-in."
     except httpx.RequestError:
-        return None, "Could not reach the API, or the request timed out."
+        return None, None, "Could not reach the API, or the request timed out."
     if response.status_code >= 400:
-        return None, error_text(response)
+        return response.status_code, None, error_text(response)
     try:
-        return response.json(), None
+        return response.status_code, response.json(), None
     except ValueError:
-        return None, "The API returned an unexpected response."
+        return response.status_code, None, "The API returned an unexpected response."
+
+
+def call(method: str, path: str, **kwargs):
+    """(data, error message); errors are shown to the user, never raised."""
+    _, data, problem = call_with_status(method, path, **kwargs)
+    return data, problem
+
+
+def format_time(value: str | None) -> str:
+    return value[:16].replace("T", " ") if value else "never"
+
+
+def access_request_page() -> None:
+    """Signed in, but not (yet) a user: request access with the invite link."""
+    st.title("Document Assistant")
+    st.caption(f"Signed in as {claims['email'] or claims['name']}")
+    st.button("Sign out", on_click=st.logout)
+
+    status, problem = call("GET", "/access-request")
+    if problem:
+        st.error(problem)
+        return
+    if status["account_status"] == "disabled":
+        st.error("Your account is disabled. Please contact the administrator.")
+        return
+    if status["request_status"] == "pending":
+        st.info(
+            f"Your access request from {format_time(status['requested_at'])} is waiting "
+            "for approval. Come back later; you can close this page."
+        )
+        return
+    if status["request_status"] == "refused" and status["decided_at"]:
+        st.warning(
+            "Your last access request was declined. You can send a new one a week "
+            "after the decision."
+        )
+
+    code = invite_code or extract_invite_code(st.context.cookies.get(INVITE_COOKIE))
+    st.subheader("Request access")
+    with st.form("access-request"):
+        if code:
+            st.caption("Invite link recognized.")
+            pasted = ""
+        else:
+            pasted = st.text_input(
+                "Invite link", help="Paste the complete invite link you received."
+            )
+        message = st.text_area(
+            "Message to the administrator (optional)",
+            max_chars=500,
+            placeholder="Who are you? Why would you like to use the assistant?",
+        )
+        submitted = st.form_submit_button("Request access", type="primary")
+    if not submitted:
+        return
+    code = code or extract_invite_code(pasted)
+    if not code:
+        st.error("Please paste the complete invite link you received.")
+        return
+    data, problem = call(
+        "POST", "/access-request", json={"invite_code": code, "message": message or None}
+    )
+    if problem:
+        st.error(problem)
+        return
+    kind, text = SUBMIT_MESSAGES.get(data["result"], ("error", "Unexpected answer."))
+    getattr(st, kind)(text)
+    if data["result"] in ("created", "pending", "already_user"):
+        st.html(invite_cookie_script(None), unsafe_allow_javascript=True)
+
+
+def load_account(refresh: bool = False) -> dict:
+    """The signed-in user's account (/me), cached per session; stops for non-users."""
+    if refresh or "account" not in st.session_state:
+        status, data, problem = call_with_status("GET", "/me")
+        if status == 403:
+            access_request_page()
+            st.stop()
+        if problem:
+            st.title("Document Assistant")
+            st.error(problem)
+            st.button("Retry")
+            st.stop()
+        st.session_state.account = data
+    return st.session_state.account
+
+
+account = load_account()
 
 
 # Dropbox sends the browser back here after the user approved (or denied) access.
@@ -128,7 +237,16 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.caption(f"Signed in as {claims['email'] or claims['name']}")
     st.button("Sign out", on_click=st.logout)
-    page = st.radio("Page", ["Chat", "My documents"], key="page", label_visibility="collapsed")
+    pages = ["Chat", "My documents"] + (["Admin"] if account.get("is_admin") else [])
+    pending = account.get("pending_requests") or 0
+    page = st.radio(
+        "Page",
+        pages,
+        key="page",
+        label_visibility="collapsed",
+        format_func=lambda name: f"Admin ({pending} open)" if name == "Admin" and pending
+        else name,
+    )
 
     st.header("Settings")
 
@@ -144,10 +262,6 @@ with st.sidebar:
         st.rerun()
 
     st.caption(f"API: {API_BASE_URL}")
-
-
-def format_time(value: str | None) -> str:
-    return value[:16].replace("T", " ") if value else "never"
 
 
 @st.dialog("Document passages", width="large")
@@ -197,6 +311,7 @@ def documents_page() -> None:
     if problem:
         st.error(problem)
         return
+    st.session_state.account = info
     dropbox = info["dropbox"]
 
     st.markdown("#### Your index")
@@ -284,6 +399,145 @@ def remove_data_section(connected: bool) -> None:
                 st.session_state.flash = ("success", "All your documents were deleted.")
                 st.rerun()
 
+
+def admin_done(kind: str, text: str) -> None:
+    """Show the outcome after the rerun and refresh the open-request count."""
+    st.session_state.flash = (kind, text)
+    load_account(refresh=True)
+    st.rerun()
+
+
+def admin_page() -> None:
+    st.subheader("Admin")
+    if flash := st.session_state.pop("flash", None):
+        getattr(st, flash[0])(flash[1])
+
+    st.markdown("#### Invite link")
+    invite, problem = call("GET", "/admin/invite")
+    if problem:
+        st.error(problem)
+    else:
+        st.code(invite_link(os.getenv("AUTH_REDIRECT_URI", ""), invite["code"]), language=None)
+        st.caption(
+            "Send this link to people you want to invite. They sign in with a personal "
+            "Microsoft account and send a request, which you approve or refuse below "
+            "(you get an e-mail when e-mail notifications are configured). Anyone with "
+            "the link can send a request."
+        )
+        with st.expander("Generate a new link"):
+            confirmed = st.checkbox("The current link stops working")
+            if st.button("Generate new link", disabled=not confirmed):
+                _, problem = call("POST", "/admin/invite")
+                if problem:
+                    st.error(problem)
+                else:
+                    admin_done("success", "New invite link generated.")
+
+    st.markdown("#### Access requests")
+    requests, problem = call("GET", "/admin/requests", params={"pending_only": True})
+    if problem:
+        st.error(problem)
+    elif not requests:
+        st.write("No open requests.")
+    for request in requests or []:
+        with st.container(border=True):
+            st.markdown(f"**{request['display_name'] or request['email']}** · {request['email']}")
+            st.caption(
+                f"Requested {format_time(request['created_at'])} · "
+                + (
+                    "personal Microsoft account"
+                    if request["personal_account"]
+                    else "work or school account (e-mail address not verified)"
+                )
+            )
+            if request["message"]:
+                st.text(request["message"])
+            approve, refuse = st.columns(2)
+            for column, decision, label in (
+                (approve, "approve", "Approve"),
+                (refuse, "refuse", "Refuse"),
+            ):
+                if column.button(
+                    label,
+                    key=f"{decision}-{request['id']}",
+                    type="primary" if decision == "approve" else "secondary",
+                ):
+                    data, problem = call(
+                        "POST", f"/admin/requests/{request['id']}/{decision}"
+                    )
+                    if problem:
+                        st.error(problem)
+                    else:
+                        admin_done(
+                            "success",
+                            f"{request['email']}: "
+                            + ("approved" if data["result"] == "approved" else "refused"),
+                        )
+    with st.expander("Decided requests"):
+        decided, problem = call("GET", "/admin/requests", params={"pending_only": False})
+        rows = [r for r in decided or [] if r["status"] != "pending"]
+        if problem:
+            st.error(problem)
+        elif not rows:
+            st.write("None yet.")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "E-mail": r["email"],
+                        "Name": r["display_name"] or "",
+                        "Decision": r["status"],
+                        "Decided": format_time(r["decided_at"]),
+                    }
+                    for r in rows
+                ],
+                hide_index=True,
+            )
+
+    st.markdown("#### Users")
+    people, problem = call("GET", "/admin/users")
+    if problem:
+        st.error(problem)
+        return
+    st.dataframe(
+        [
+            {
+                "E-mail": person["email"],
+                "Name": person["display_name"] or "",
+                "Status": person["status"] + (" (admin)" if person["is_admin"] else ""),
+                "Documents": person["documents"],
+                "Last login": format_time(person["last_login_at"]),
+            }
+            for person in people
+        ],
+        hide_index=True,
+    )
+    others = [person for person in people if person["email"] != account["email"]]
+    if not others:
+        return
+    chosen = st.selectbox(
+        "Change a user",
+        others,
+        format_func=lambda person: f"{person['email']} ({person['status']})",
+    )
+    enable, disable = st.columns(2)
+    for column, status, label in (
+        (enable, "active", "Enable"),
+        (disable, "disabled", "Disable"),
+    ):
+        if column.button(label, key=f"user-{status}"):
+            data, problem = call(
+                "PUT", f"/admin/users/{chosen['id']}/status", json={"status": status}
+            )
+            if problem:
+                st.error(problem)
+            else:
+                admin_done("success", f"{chosen['email']}: {data['status']}")
+
+
+if page == "Admin":
+    admin_page()
+    st.stop()
 
 if page == "My documents":
     documents_page()

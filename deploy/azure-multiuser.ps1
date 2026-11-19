@@ -13,7 +13,11 @@
       3. reconfigures rag-api (connects as rag_runtime, user-token secret, Dropbox app,
          token encryption key, worker job id, system identity + 'Container Apps Jobs
          Operator' on rag-sync) and rag-ui (Microsoft login through `python ui_start.py`,
-         APP_PASSWORD removed).
+         APP_PASSWORD removed);
+      4. with -EmailNotifications: creates/reuses Azure Communication Services
+         (acs-rag-<suffix>) with an Azure-managed e-mail domain (acs-email-<suffix>) and
+         gives rag-api its connection string, so admins get an e-mail per access request.
+         Needs the Microsoft.Communication provider registered once by a subscription owner.
 
     The existing `db-url` secret (admin) is left unchanged for the migrate/admin jobs and the
     legacy workflows; the API uses the new `db-runtime-url` secret.
@@ -48,6 +52,9 @@ param(
     [string]$EnvFile = '',
     [switch]$PreflightOnly,
     [switch]$RunMigration,
+    # Create/reuse Azure Communication Services (Azure-managed e-mail domain) and let the
+    # API e-mail the admins about new access requests.
+    [switch]$EmailNotifications,
     [switch]$AssumeYes
 )
 
@@ -56,6 +63,9 @@ $script:SecretValues = [System.Collections.Generic.List[string]]::new()
 $envFile = if ($EnvFile) { $EnvFile } else { Join-Path (Split-Path $PSScriptRoot -Parent) '.env.azure.v2' }
 $pgServer = "pg-rag-$Suffix"
 $roleName = 'Container Apps Jobs Operator'
+$emailServiceName = "acs-email-$Suffix"
+$communicationName = "acs-rag-$Suffix"
+$acsApiVersion = '2023-04-01'
 
 function Protect-Text([string]$Text) {
     foreach ($secret in $script:SecretValues) {
@@ -161,6 +171,12 @@ catch {
     throw "Subscription $SubscriptionId is not accessible with the current 'az login'. Run 'az account list --output table'."
 }
 if ($sub.state -ne 'Enabled') { throw "Subscription $SubscriptionId is in state '$($sub.state)', not Enabled." }
+if ($EmailNotifications) {
+    $acsProvider = Invoke-Az 'check Microsoft.Communication provider' provider show --namespace Microsoft.Communication --query registrationState --output tsv
+    if ($acsProvider -ne 'Registered') {
+        throw "Resource provider Microsoft.Communication is '$acsProvider'. A subscription owner must register it once: az provider register --namespace Microsoft.Communication --subscription $SubscriptionId --wait"
+    }
+}
 
 Assert-Value (Invoke-Az 'check Container Apps environment' containerapp env show `
         --resource-group $ResourceGroup --name $EnvironmentName --query name --output tsv) 'Container Apps environment' | Out-Null
@@ -215,6 +231,7 @@ Write-Host "  Microsoft tenant: $msTenant"
 Write-Host "  Generated secrets: $secretNote"
 Write-Host "  Migration:       $(if ($RunMigration) { "will run now$(if ($ownerEmail) { ' (existing data -> owner)' })" } else { 'not run (use -RunMigration, or run job rag-migrate yourself) - run it BEFORE users log in' })"
 Write-Host "  OCR for worker:  $(if ($docIntel) { 'enabled' } else { 'disabled' })"
+Write-Host "  E-mail to admins: $(if ($EmailNotifications) { "enabled ($communicationName / $emailServiceName, Azure-managed domain, data in Europe; charged per e-mail)" } else { 'not configured by this run' })"
 Write-Host ''
 Write-Host 'Manual checks: Entra app redirect URI, Dropbox app redirect URI (the UI root) and scopes,'
 Write-Host '  Dropbox development-mode user limit. See README "Multi-user mode (v2)".'
@@ -303,18 +320,74 @@ else {
     Write-Warning 'Migration was not run here. Apps are switched anyway; run job rag-migrate before the first login or the API will fail (missing rag_runtime role / tables).'
 }
 
+# --- E-mail notifications (optional) ---------------------------------------------
+# PUT the ARM resource unless it already exists in the wanted state, then wait until it
+# is provisioned. ARM REST through `az rest` avoids the az communication extension.
+function Set-ArmResource([string]$Label, [string]$Id, [hashtable]$Body, [scriptblock]$IsCurrent = { $true }) {
+    $url = "https://management.azure.com${Id}?api-version=$acsApiVersion"
+    $resource = $null
+    try { $resource = Invoke-Az "read $Label" rest --method get --url $url --output json | ConvertFrom-Json }
+    catch { if ("$_" -notmatch 'NotFound|ResourceNotFound|could not be found|\b404\b') { throw } }
+    if ($resource -and $resource.properties.provisioningState -eq 'Succeeded' -and (& $IsCurrent $resource)) {
+        return $resource
+    }
+    Write-Host "Creating/updating $Label..."
+    $file = New-TemporaryFile
+    try {
+        [System.IO.File]::WriteAllText($file.FullName, ($Body | ConvertTo-Json -Depth 10))
+        Invoke-Az "create $Label" rest --method put --url $url --body "@$file" --output none | Out-Null
+    }
+    finally { Remove-Item $file -ErrorAction SilentlyContinue }
+    for ($i = 0; $i -lt 60; $i++) {
+        $resource = Invoke-Az "read $Label" rest --method get --url $url --output json | ConvertFrom-Json
+        $state = $resource.properties.provisioningState
+        if ($state -eq 'Succeeded') { return $resource }
+        if ($state -in 'Failed', 'Canceled') { throw "$Label provisioning ended in state '$state'." }
+        Start-Sleep -Seconds 10
+    }
+    throw "$Label was not provisioned within 10 minutes; rerun the script."
+}
+
+$apiEmailSecrets = @()
+$apiEmailEnv = @()
+if ($EmailNotifications) {
+    $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+    $emailServiceId = "$rgId/providers/Microsoft.Communication/emailServices/$emailServiceName"
+    Set-ArmResource "e-mail service $emailServiceName" $emailServiceId @{
+        location = 'global'; properties = @{ dataLocation = 'Europe' }
+    } | Out-Null
+    $domainId = "$emailServiceId/domains/AzureManagedDomain"
+    $domain = Set-ArmResource 'Azure-managed e-mail domain' $domainId @{
+        location   = 'global'
+        properties = @{ domainManagement = 'AzureManaged'; userEngagementTracking = 'Disabled' }
+    }
+    $senderDomain = Assert-Value $domain.properties.mailFromSenderDomain 'e-mail sender domain' '^[a-z0-9.-]+\.azurecomm\.net$'
+    $communicationId = "$rgId/providers/Microsoft.Communication/communicationServices/$communicationName"
+    Set-ArmResource "Communication Services $communicationName" $communicationId @{
+        location = 'global'; properties = @{ dataLocation = 'Europe'; linkedDomains = @($domainId) }
+    } { param($r) @($r.properties.linkedDomains) -contains $domainId } | Out-Null
+    $acsConnection = Assert-Value (Invoke-Az 'read Communication Services key' rest --method post `
+            --url "https://management.azure.com$communicationId/listKeys?api-version=$acsApiVersion" `
+            --query primaryConnectionString --output tsv) 'Communication Services connection string' '^endpoint=https://'
+    $script:SecretValues.Add($acsConnection)
+    $apiEmailSecrets = @("acs-email-connection=$acsConnection")
+    $apiEmailEnv = @('ACS_EMAIL_CONNECTION_STRING=secretref:acs-email-connection', "ACS_EMAIL_SENDER=DoNotReply@$senderDomain")
+    Write-Host "E-mail notifications ready (sender DoNotReply@$senderDomain)."
+}
+
 # --- rag-api -------------------------------------------------------------------
 Write-Host 'Configuring rag-api...'
 $principalId = Assert-Value (Invoke-Az 'enable system identity on rag-api' containerapp identity assign `
         --resource-group $ResourceGroup --name rag-api --system-assigned --query principalId --output tsv) 'rag-api principal id' '^[0-9a-fA-F-]{36}$'
 Invoke-Az 'set rag-api secrets' containerapp secret set --resource-group $ResourceGroup --name rag-api --secrets `
     "db-runtime-url=$runtimeUrl" "user-token-secret=$($generated['USER_TOKEN_SECRET'])" `
-    "token-encryption-key=$($generated['TOKEN_ENCRYPTION_KEY'])" "dropbox-app-secret=$(Get-EnvValue 'DROPBOX_APP_SECRET')" --output none | Out-Null
+    "token-encryption-key=$($generated['TOKEN_ENCRYPTION_KEY'])" "dropbox-app-secret=$(Get-EnvValue 'DROPBOX_APP_SECRET')" `
+    @apiEmailSecrets --output none | Out-Null
 Invoke-Az 'update rag-api' containerapp update --resource-group $ResourceGroup --name rag-api --image $Image --set-env-vars `
     DATABASE_URL=secretref:db-runtime-url USER_TOKEN_SECRET=secretref:user-token-secret `
     TOKEN_ENCRYPTION_KEY=secretref:token-encryption-key DROPBOX_APP_SECRET=secretref:dropbox-app-secret `
     "DROPBOX_APP_KEY=$(Get-EnvValue 'DROPBOX_APP_KEY')" "DROPBOX_REDIRECT_URI=https://$uiFqdn/" `
-    "WORKER_JOB_RESOURCE_ID=$syncJobId" --output none | Out-Null
+    "UI_BASE_URL=https://$uiFqdn/" "WORKER_JOB_RESOURCE_ID=$syncJobId" @apiEmailEnv --output none | Out-Null
 
 try {
     $hasRole = Invoke-Az 'check worker role assignment' role assignment list --assignee $principalId --scope $syncJobId `
@@ -350,7 +423,8 @@ if (Get-AppSecret 'rag-ui' 'app-password') {
 
 Write-Host ''
 Write-Host "Done. UI: https://$uiFqdn"
-Write-Host 'Next: invite users (they cannot log in otherwise), e.g.'
+Write-Host 'Next: invite users with the invite link on the Admin page of the UI (admins: OWNER_EMAIL,'
+Write-Host '  or manage_users.py admin <email>). Without an admin, use the rag-admin job, e.g.'
 Write-Host "  az containerapp job start --resource-group $ResourceGroup --name rag-admin --subscription $SubscriptionId --command python --args manage_users.py invite friend@outlook.com"
 Write-Host '  (add --tid/--oid for work accounts; output is in Log Analytics ContainerAppConsoleLogs_CL).'
 Write-Host 'The legacy rag-ingest job / ingest workflows write unowned documents that no user can see: do not use them in v2.'

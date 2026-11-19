@@ -133,6 +133,9 @@ def test_multiuser_script_is_safe_and_ordered():
     # The UI start command must not contain arguments that start with a dash.
     assert "--command python --args ui_start.py" in text
     assert "APP_PASSWORD" in text
+    # The e-mail key is masked and in place before the API is reconfigured.
+    assert "$script:SecretValues.Add($acsConnection)" in text
+    assert text.index("# --- E-mail notifications") < text.index("# --- rag-api")
 
 
 def test_multiuser_workflow_is_pinned_and_environment_protected():

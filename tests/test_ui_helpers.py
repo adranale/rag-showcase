@@ -1,7 +1,38 @@
 import httpx
 import pytest
 
-from ui_helpers import describe_location, group_citations, request_with_retry
+from ui_helpers import (
+    describe_location,
+    extract_invite_code,
+    group_citations,
+    invite_cookie_script,
+    invite_link,
+    request_with_retry,
+)
+
+CODE = "AbC_def-123456789xyz"
+
+
+def test_invite_code_from_link_or_code():
+    assert extract_invite_code(CODE) == CODE
+    assert extract_invite_code(f"  https://ui.example/?invite={CODE}&x=1 ") == CODE
+    assert extract_invite_code("short") is None
+    assert extract_invite_code('x"; alert(1); "' + CODE) is None
+    assert extract_invite_code(None) is None
+
+
+def test_invite_cookie_script_only_embeds_valid_codes():
+    assert f"rag_invite={CODE}; path=/; max-age=3600" in invite_cookie_script(CODE)
+    assert "rag_invite=; path=/; max-age=0" in invite_cookie_script(None)
+    with pytest.raises(ValueError):
+        invite_cookie_script('"><script>alert(1)</script>')
+
+
+def test_invite_link_uses_the_ui_origin():
+    assert (
+        invite_link("https://ui.example/oauth2callback", CODE)
+        == f"https://ui.example/?invite={CODE}"
+    )
 
 
 def run(responses, method="GET", retries=3):

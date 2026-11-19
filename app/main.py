@@ -1,14 +1,15 @@
 import logging
 from contextlib import asynccontextmanager, contextmanager
 from threading import Lock
+from typing import Literal
 
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
-from app import documents, dropbox_oauth, jobs, users, wake
-from app.auth import current_user
+from app import access, documents, dropbox_oauth, jobs, notify, users, wake
+from app.auth import current_admin, current_identity, current_user
 from app.crypto import CryptoError
 from app.db import get_connection
 from app.generation import GenerationError, generate_answer
@@ -53,6 +54,17 @@ class FolderRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     folder: str = Field(max_length=1024)
+
+
+class AccessRequestBody(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    invite_code: str = Field(min_length=1, max_length=128)
+    message: str | None = Field(default=None, max_length=access.MAX_MESSAGE_LENGTH)
+
+
+class UserStatusBody(BaseModel):
+    status: Literal["active", "disabled"]
 
 
 @app.get("/health")
@@ -203,13 +215,89 @@ def me(user: User = Depends(current_user)):
     with _service_errors("Account"):
         dropbox = dropbox_oauth.status(user)
         job = jobs.latest(user.id)
+        pending = access.pending_count(user) if user.is_admin else None
     return {
         "email": user.email,
+        "is_admin": user.is_admin,
+        "pending_requests": pending,
         "chats_per_day": user.chats_per_day,
         "files_per_sync": user.files_per_sync,
         "dropbox": dropbox,
         "sync": _public_job(job),
     }
+
+
+@app.get("/access-request")
+def access_request_status(claims: dict = Depends(current_identity)):
+    with _service_errors("Access requests"):
+        return access.request_status(claims)
+
+
+@app.post("/access-request")
+def request_access(
+    payload: AccessRequestBody,
+    background: BackgroundTasks,
+    claims: dict = Depends(current_identity),
+):
+    with _service_errors("Access requests"):
+        result = access.submit_request(claims, payload.invite_code, payload.message)
+    if result == "created":
+        background.add_task(notify.notify_access_request, claims, payload.message)
+    return {"result": result}
+
+
+@app.get("/admin/requests")
+def admin_requests(pending_only: bool = True, admin: User = Depends(current_admin)):
+    with _service_errors("Admin"):
+        return access.list_requests(admin, pending_only)
+
+
+@app.post("/admin/requests/{request_id}/{decision}")
+def admin_decide(
+    request_id: int,
+    decision: Literal["approve", "refuse"],
+    admin: User = Depends(current_admin),
+):
+    with _service_errors("Admin"):
+        result = access.decide(admin, request_id, decision == "approve")
+    if result == "not_pending":
+        raise HTTPException(status_code=409, detail="This request was already decided.")
+    if result == "email_in_use":
+        raise HTTPException(
+            status_code=409, detail="Another account already uses this e-mail address."
+        )
+    return {"result": result}
+
+
+@app.get("/admin/users")
+def admin_users(admin: User = Depends(current_admin)):
+    with _service_errors("Admin"):
+        return access.list_users(admin)
+
+
+@app.put("/admin/users/{user_id}/status")
+def admin_user_status(
+    user_id: int, payload: UserStatusBody, admin: User = Depends(current_admin)
+):
+    with _service_errors("Admin"):
+        result = access.set_user_status(admin, user_id, payload.status)
+    if result == "self":
+        raise HTTPException(status_code=409, detail="You cannot change your own account.")
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="User not found.")
+    return {"status": result}
+
+
+@app.get("/admin/invite")
+def admin_invite(admin: User = Depends(current_admin)):
+    with _service_errors("Admin"):
+        return {"code": access.invite_code(admin)}
+
+
+@app.post("/admin/invite")
+def admin_rotate_invite(admin: User = Depends(current_admin)):
+    with _service_errors("Admin"):
+        return {"code": access.rotate_invite_code(admin)}
 
 
 @app.post("/dropbox/authorize")

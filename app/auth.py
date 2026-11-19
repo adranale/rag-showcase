@@ -11,7 +11,7 @@ import os
 import secrets
 
 import psycopg
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from app import users, wake
@@ -60,20 +60,23 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-def current_user(
+def current_identity(
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
-) -> User:
+) -> dict:
+    """Verified sign-in claims, also for people who are not users (yet)."""
     require_api_key(x_api_key)
 
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=401, detail="Missing user token")
     try:
-        claims = verify_user_token(token.strip())
+        return verify_user_token(token.strip())
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
 
+
+def current_user(claims: dict = Depends(current_identity)) -> User:
     try:
         user = users.authenticate(claims)
     except (psycopg.Error, RuntimeError) as exc:
@@ -86,4 +89,10 @@ def current_user(
             status_code=403,
             detail="This account is not enabled. Ask the owner for an invitation.",
         )
+    return user
+
+
+def current_admin(user: User = Depends(current_user)) -> User:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin rights required.")
     return user
