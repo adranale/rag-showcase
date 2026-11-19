@@ -8,6 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from app.auth import AuthError, issue_user_token
+from ui_helpers import describe_location, group_citations, request_with_retry
 
 load_dotenv()
 
@@ -62,6 +63,17 @@ def api(method: str, path: str, **kwargs) -> httpx.Response:
     )
 
 
+def api_retry(method: str, path: str, **kwargs) -> httpx.Response:
+    """Like api(), but shows a notice and waits while the API/database starts."""
+    notice = st.empty()
+    try:
+        return request_with_retry(
+            lambda: api(method, path, **kwargs), method=method, notify=notice.info
+        )
+    finally:
+        notice.empty()
+
+
 def error_text(response: httpx.Response) -> str:
     try:
         detail = response.json().get("detail")
@@ -73,7 +85,7 @@ def error_text(response: httpx.Response) -> str:
 def call(method: str, path: str, **kwargs):
     """(data, error message); errors are shown to the user, never raised."""
     try:
-        response = api(method, path, **kwargs)
+        response = api_retry(method, path, **kwargs)
     except AuthError:
         return None, "The server is not configured for user sign-in."
     except httpx.RequestError:
@@ -136,32 +148,6 @@ with st.sidebar:
 
 def format_time(value: str | None) -> str:
     return value[:16].replace("T", " ") if value else "never"
-
-
-def describe_location(location: dict) -> str:
-    parts = []
-    if location.get("page_number"):
-        parts.append(f"page {location['page_number']}")
-    if "char_start" in location and "char_end" in location:
-        parts.append(f"characters {location['char_start']}-{location['char_end']}")
-    return ", ".join(parts) or "location unknown"
-
-
-def group_citations(citations: list[dict]) -> list[dict]:
-    """One entry per document, with all its cited passages in answer order."""
-    groups: dict[int, dict] = {}
-    for citation in citations:
-        group = groups.setdefault(
-            citation["document_id"],
-            {
-                "document_id": citation["document_id"],
-                "title": citation["title"],
-                "source_url": citation.get("source_url"),
-                "passages": [],
-            },
-        )
-        group["passages"].append(citation)
-    return list(groups.values())
 
 
 @st.dialog("Document passages", width="large")
@@ -362,7 +348,7 @@ if question := st.chat_input("Ask a question about your documents"):
 
     try:
         with st.spinner("Searching documents and generating an answer..."):
-            response = api(
+            response = api_retry(
                 "POST",
                 "/chat",
                 json={
