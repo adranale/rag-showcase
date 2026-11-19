@@ -74,6 +74,8 @@ Validation without deploying: parse the PowerShell script, run tests, validate w
 - If a request is ambiguous, ask the user (ask_user) before acting; do not guess and implement.
 - Do not commit, push, deploy, or delete anything without explicit approval.
 - Update documentation affected by a change (README, instructions) as part of that change; never ask for permission to do so.
+
+### Commit messages
 - Commit messages must not mention Copilot or AI tools: no "Co-authored-by: Copilot" trailer, no tool names.
 
 ## Security
