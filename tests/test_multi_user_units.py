@@ -45,19 +45,26 @@ def test_short_secret_is_rejected(monkeypatch):
 
 def test_current_user_requires_bearer_and_api_key(monkeypatch):
     with pytest.raises(HTTPException) as missing:
-        auth.current_user(x_api_key=None, authorization=None)
+        auth.current_identity(x_api_key=None, authorization=None)
     assert missing.value.status_code == 401
 
     monkeypatch.setenv("API_KEY", "k")
     token = auth.issue_user_token({"oid": "o", "tid": "t"})
     with pytest.raises(HTTPException) as wrong_key:
-        auth.current_user(x_api_key="nope", authorization=f"Bearer {token}")
+        auth.current_identity(x_api_key="nope", authorization=f"Bearer {token}")
     assert wrong_key.value.status_code == 401
 
+    claims = auth.current_identity(x_api_key="k", authorization=f"Bearer {token}")
     monkeypatch.setattr(users, "authenticate", lambda claims: None)
     with pytest.raises(HTTPException) as not_enabled:
-        auth.current_user(x_api_key="k", authorization=f"Bearer {token}")
+        auth.current_user(claims)
     assert not_enabled.value.status_code == 403
+
+    member = users.User(id=1, email="a@b.c", status="active", chats_per_day=1,
+                        files_per_sync=1)
+    with pytest.raises(HTTPException) as not_admin:
+        auth.current_admin(member)
+    assert not_admin.value.status_code == 403
 
 
 def test_crypto_round_trip_and_wrong_key(monkeypatch):
@@ -174,5 +181,97 @@ def test_endpoints_reject_anonymous_calls():
         ("delete", "/me/documents"),
         ("get", "/documents/1/chunks"),
         ("post", "/dropbox/authorize"),
+        ("get", "/access-request"),
+        ("get", "/admin/users"),
+        ("post", "/admin/invite"),
     ]:
         assert getattr(client, method)(path).status_code == 401, path
+
+
+def test_access_request_notifies_admins_only_for_new_requests(monkeypatch):
+    from app import access, notify
+
+    claims = {"oid": "o", "tid": "t", "email": "new@outlook.com", "name": "New"}
+    app.dependency_overrides[auth.current_identity] = lambda: claims
+    sent = []
+    monkeypatch.setattr(notify, "notify_access_request", lambda c, m: sent.append((c, m)))
+    try:
+        client = TestClient(app)
+        for result in ("created", "pending"):
+            monkeypatch.setattr(access, "submit_request", lambda c, code, m, r=result: r)
+            response = client.post(
+                "/access-request", json={"invite_code": "c" * 20, "message": "hi"}
+            )
+            assert response.json() == {"result": result}
+    finally:
+        app.dependency_overrides.clear()
+    assert sent == [(claims, "hi")]
+
+
+def test_admin_endpoints_require_admin_and_map_results(client, monkeypatch):
+    from app import access
+
+    assert client.get("/admin/requests").status_code == 403
+
+    admin = users.User(id=2, email="boss@x.org", status="active", chats_per_day=1,
+                       files_per_sync=1, is_admin=True)
+    app.dependency_overrides[auth.current_user] = lambda: admin
+    expected = {"not_pending": 409, "email_in_use": 409, "approved": 200}
+    for result, code in expected.items():
+        monkeypatch.setattr(access, "decide", lambda a, i, ok, r=result: r)
+        assert client.post("/admin/requests/5/approve").status_code == code
+    assert client.post("/admin/requests/5/delete").status_code == 422
+
+    monkeypatch.setattr(access, "set_user_status", lambda a, i, s: "self")
+    response = client.put("/admin/users/2/status", json={"status": "disabled"})
+    assert response.status_code == 409
+    assert client.put("/admin/users/3/status", json={"status": "admin"}).status_code == 422
+
+
+def test_email_is_signed_and_skipped_without_configuration(monkeypatch):
+    import base64
+    import hashlib
+    import hmac
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    from app import notify
+
+    monkeypatch.delenv("ACS_EMAIL_CONNECTION_STRING", raising=False)
+    assert notify.send_email(["a@b.c"], "s", "t") is False
+
+    key = base64.b64encode(b"k" * 32).decode()
+    monkeypatch.setenv(
+        "ACS_EMAIL_CONNECTION_STRING", f"endpoint=https://acs.example/;accesskey={key}"
+    )
+    monkeypatch.setenv("ACS_EMAIL_SENDER", "DoNotReply@x.azurecomm.net")
+    captured = {}
+
+    def fake_post(url, content, headers, timeout):
+        captured.update(url=url, body=content, headers=headers)
+        return httpx.Response(202)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    assert notify.send_email(["a@b.c"], "Line\nbreak", "text") is True
+
+    headers, body = captured["headers"], captured["body"]
+    assert captured["url"] == "https://acs.example/emails:send?api-version=2023-03-31"
+    assert b'"subject": "Line break"' in body
+    content_hash = base64.b64encode(hashlib.sha256(body).digest()).decode()
+    assert headers["x-ms-content-sha256"] == content_hash
+    parts = urlsplit(captured["url"])
+    string_to_sign = (
+        f"POST\n{parts.path}?{parts.query}\n{headers['x-ms-date']};{parts.netloc};"
+        f"{content_hash}"
+    )
+    signature = base64.b64encode(
+        hmac.new(base64.b64decode(key), string_to_sign.encode(), hashlib.sha256).digest()
+    ).decode()
+    assert headers["Authorization"] == (
+        "HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256"
+        f"&Signature={signature}"
+    )
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(401))
+    assert notify.send_email(["a@b.c"], "s", "t") is False

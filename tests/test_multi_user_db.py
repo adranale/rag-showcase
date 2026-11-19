@@ -356,3 +356,123 @@ def test_dropbox_oauth_flow(admin_url, runtime, monkeypatch):
     monkeypatch.setattr(dropbox_oauth, "source_for", lambda *args: FakeSource())
     dropbox_oauth.disconnect(owner, delete_documents=False)
     assert revoked and dropbox_oauth.load_credentials(owner.id) is None
+
+
+def make_admin(admin_url):
+    from dataclasses import replace
+
+    user_id = make_user(admin_url)
+    with psycopg.connect(admin_url) as conn:
+        conn.execute("UPDATE users SET is_admin = true WHERE id = %s;", (user_id,))
+    return replace(load_user(admin_url, user_id), is_admin=True)
+
+
+def test_access_request_flow(admin_url, runtime):
+    from app import access, users
+
+    admin = make_admin(admin_url)
+    member = load_user(admin_url, make_user(admin_url))
+    code = access.invite_code(admin)
+    assert access.invite_code(admin) == code  # created once, then stable
+    oid = uuid.uuid4().hex
+    claims = {"oid": oid, "tid": PERSONAL.upper(), "email": f"{oid[:8]}@outlook.com",
+              "name": "New Person"}
+
+    assert access.submit_request(claims, "wrong-code-123456789", None) == "invalid_code"
+    assert access.submit_request(claims, code, "hello") == "created"
+    assert access.submit_request(claims, code, "again") == "pending"
+    assert access.request_status(claims)["request_status"] == "pending"
+    assert users.authenticate(claims) is None
+
+    # The runtime role cannot read or change requests directly.
+    from app.db import get_connection
+
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        with get_connection(admin.id) as conn:
+            conn.execute("SELECT * FROM access_requests;")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        access.list_requests(member, pending_only=True)
+
+    pending = access.list_requests(admin, pending_only=True)
+    request = next(r for r in pending if r["email"] == claims["email"])
+    assert request["personal_account"] and request["message"] == "hello"
+    assert access.pending_count(admin) >= 1
+
+    assert access.decide(admin, request["id"], approve=True) == "approved"
+    assert access.decide(admin, request["id"], approve=False) == "not_pending"
+    user = users.authenticate(claims)
+    assert user is not None and user.status == "active" and not user.is_admin
+    assert access.submit_request(claims, code, None) == "already_user"
+
+    # Refused: no new request for a week.
+    other = {**claims, "oid": uuid.uuid4().hex, "email": "x@outlook.com"}
+    assert access.submit_request(other, code, None) == "created"
+    other_id = next(
+        r["id"] for r in access.list_requests(admin, True) if r["email"] == "x@outlook.com"
+    )
+    assert access.decide(admin, other_id, approve=False) == "refused"
+    assert access.submit_request(other, code, None) == "refused_recently"
+    with psycopg.connect(admin_url) as conn:
+        conn.execute(
+            "UPDATE access_requests SET decided_at = now() - interval '8 days' WHERE id = %s;",
+            (other_id,),
+        )
+    assert access.submit_request(other, code, None) == "created"
+
+    # A new link invalidates the old one.
+    new_code = access.rotate_invite_code(admin)
+    assert new_code != code
+    assert access.submit_request({**claims, "oid": "z" * 10}, code, None) == "invalid_code"
+
+
+def test_approval_does_not_take_over_a_bound_account(admin_url, runtime):
+    from app import access, users
+
+    admin = make_admin(admin_url)
+    code = access.invite_code(admin)
+    taken = f"{uuid.uuid4().hex[:8]}@outlook.com"
+    make_user(admin_url, email=taken, entra_tid=PERSONAL, entra_oid="owner-oid")
+    claims = {"oid": "other-oid", "tid": PERSONAL, "email": taken, "name": "Copy"}
+    assert access.submit_request(claims, code, None) == "created"
+    request_id = next(r["id"] for r in access.list_requests(admin, True) if r["email"] == taken)
+    assert access.decide(admin, request_id, approve=True) == "email_in_use"
+    assert users.authenticate(claims) is None
+
+
+def test_admin_user_management(admin_url, runtime):
+    from app import access, users
+
+    admin = make_admin(admin_url)
+    target_id = make_user(admin_url, entra_tid=PERSONAL, entra_oid=uuid.uuid4().hex)
+    listed = {u["id"]: u for u in access.list_users(admin)}
+    assert listed[admin.id]["is_admin"] and not listed[target_id]["is_admin"]
+
+    assert access.set_user_status(admin, admin.id, "disabled") == "self"
+    assert access.set_user_status(admin, 10**9, "disabled") == "not_found"
+    assert access.set_user_status(admin, target_id, "disabled") == "disabled"
+    target = load_user(admin_url, target_id)
+    with psycopg.connect(admin_url) as conn:
+        oid = conn.execute(
+            "SELECT entra_oid FROM users WHERE id = %s;", (target_id,)
+        ).fetchone()[0]
+    assert users.authenticate({"oid": oid, "tid": PERSONAL, "email": target.email}) is None
+    assert access.set_user_status(admin, target_id, "active") == "active"
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        access.set_user_status(target, admin.id, "disabled")
+
+
+def test_init_db_makes_the_owner_admin(admin_url):
+    import subprocess
+    import sys
+
+    email = f"{uuid.uuid4().hex[:8]}@outlook.com"
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "ADMIN_DATABASE_URL": admin_url, "OWNER_EMAIL": email.upper()}
+    env.pop("POSTGRES_RESOURCE_ID", None)
+    for _ in range(2):  # idempotent
+        subprocess.run([sys.executable, "init_db.py"], cwd=root, env=env, check=True,
+                       capture_output=True)
+    with psycopg.connect(admin_url) as conn:
+        assert conn.execute(
+            "SELECT is_admin FROM users WHERE email = %s;", (email,)
+        ).fetchall() == [(True,)]

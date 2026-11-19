@@ -30,6 +30,10 @@ on:
         description: Run the schema migration job (before switching the apps)
         default: true
         type: boolean
+      email_notifications:
+        description: E-mail admins about access requests (Azure Communication Services)
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -80,6 +84,7 @@ jobs:
           -Image $env:IMAGE -EnvFile $env:ENV_FILE -AssumeYes
           ${{ inputs.preflight_only && '-PreflightOnly' || '' }}
           ${{ (!inputs.preflight_only && inputs.run_migration) && '-RunMigration' || '' }}
+          ${{ inputs.email_notifications && '-EmailNotifications' || '' }}
 
       - name: Remove secrets file
         if: ${{ always() }}
