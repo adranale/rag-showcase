@@ -8,6 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from app.auth import AuthError, issue_user_token
+from ui_helpers import describe_location, group_citations, request_with_retry
 
 load_dotenv()
 
@@ -62,34 +63,13 @@ def api(method: str, path: str, **kwargs) -> httpx.Response:
     )
 
 
-STARTUP_RETRIES = 6
-STARTUP_WAIT_SECONDS = 10
-
-
 def api_retry(method: str, path: str, **kwargs) -> httpx.Response:
-    """Like api(), but waits for a scaled-to-zero API / stopped database to start.
-
-    Retries only when the request cannot have been processed (connection failure or
-    503); GET requests are also retried after a timeout.
-    """
+    """Like api(), but shows a notice and waits while the API/database starts."""
     notice = st.empty()
     try:
-        for attempt in range(1, STARTUP_RETRIES + 1):
-            last = attempt == STARTUP_RETRIES
-            try:
-                response = api(method, path, **kwargs)
-                if response.status_code != 503 or last:
-                    return response
-            except httpx.RequestError as exc:
-                retryable = method == "GET" or isinstance(
-                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
-                )
-                if not retryable or last:
-                    raise
-            notice.info(
-                f"The service is starting up, retrying... (attempt {attempt}/{STARTUP_RETRIES})"
-            )
-            time.sleep(STARTUP_WAIT_SECONDS)
+        return request_with_retry(
+            lambda: api(method, path, **kwargs), method=method, notify=notice.info
+        )
     finally:
         notice.empty()
 
@@ -168,32 +148,6 @@ with st.sidebar:
 
 def format_time(value: str | None) -> str:
     return value[:16].replace("T", " ") if value else "never"
-
-
-def describe_location(location: dict) -> str:
-    parts = []
-    if location.get("page_number"):
-        parts.append(f"page {location['page_number']}")
-    if "char_start" in location and "char_end" in location:
-        parts.append(f"characters {location['char_start']}-{location['char_end']}")
-    return ", ".join(parts) or "location unknown"
-
-
-def group_citations(citations: list[dict]) -> list[dict]:
-    """One entry per document, with all its cited passages in answer order."""
-    groups: dict[int, dict] = {}
-    for citation in citations:
-        group = groups.setdefault(
-            citation["document_id"],
-            {
-                "document_id": citation["document_id"],
-                "title": citation["title"],
-                "source_url": citation.get("source_url"),
-                "passages": [],
-            },
-        )
-        group["passages"].append(citation)
-    return list(groups.values())
 
 
 @st.dialog("Document passages", width="large")
