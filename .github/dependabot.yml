@@ -6,8 +6,16 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # Released in lockstep (exact pins between api/sdk/semantic-conventions/exporters):
+      # single-package updates cannot resolve, so they must come in one PR.
+      opentelemetry:
+        patterns: ["opentelemetry-*"]
       python-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # sympy 1.14 requires mpmath<1.4; remove once sympy allows it.
+      - dependency-name: mpmath
+        versions: [">=1.4"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
