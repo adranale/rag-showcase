@@ -6,7 +6,7 @@ RAG Showcase: a document assistant (vector search + cited answers) built with Py
 ## Setup & commands (Windows / PowerShell; the `.sh` scripts need Git Bash)
 - Virtualenv lives in `.venv` (git-ignored): `.\.venv\Scripts\Activate.ps1`
 - Install: `pip install -r requirements-dev.txt` (adds pytest); runtime-only deps are in `requirements.txt`.
-- Azure deployment: `pwsh ./deploy/azure.ps1 -SubscriptionId <id> -Suffix <x> [-PreflightOnly]` (see README "Deploy to Azure"; resumable: detects existing resources and reuses credentials); the image is built by `.github/workflows/build-and-deploy-image.yml` (tags: full commit SHA, `latest` only from `main`).
+- Azure deployment: `pwsh ./deploy/azure.ps1 -SubscriptionId <id> -Suffix <x> [-PreflightOnly]` (see `docs/deployment.md`; resumable: detects existing resources and reuses credentials); the image is built by `.github/workflows/build-and-deploy-image.yml` (tags: full commit SHA, `latest` only from `main`).
 - Database (`compose.yaml`): `docker compose up -d db` (pgvector/pg16, db/user `rag`, port 5432). Full stack: `docker compose up` (db + api + Streamlit ui on :8501).
 - API: `uvicorn app.main:app --reload`; chat UI: `streamlit run chat_ui.py` (or `run_ui.sh`)
 - Tests: `pytest`; single test: `pytest tests/test_api.py::test_health -q`
@@ -74,6 +74,7 @@ Validation without deploying: parse the PowerShell script, run tests, validate w
 - If a request is ambiguous, ask the user (ask_user) before acting; do not guess and implement.
 - Do not commit, push, deploy, or delete anything without explicit approval.
 - Update documentation affected by a change (README, instructions) as part of that change; never ask for permission to do so.
+- Docs layout: `README.md` stays short (intro, how to try via invite link, stack, how it works, local run); details live in `docs/multi-user.md` (isolation, login, invites, API, limitations), `docs/ingestion.md` (CLI/local/Dropbox/Drive ingestion, OCR, legacy Azure ingest job) and `docs/deployment.md` (Azure base deployment, v2 upgrade, auto-stop, security, cost, cleanup). Scripts reference these files, not README sections.
 
 ### Commit messages
 - Commit messages must not mention Copilot or AI tools: no "Co-authored-by: Copilot" trailer, no tool names.

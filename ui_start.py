@@ -9,7 +9,7 @@ Streamlit reads its login settings from a secrets file; the container has no suc
     MS_TENANT           'consumers' (default, personal Microsoft accounts)
 
 'common'/'organizations' (work/school accounts) currently fail Streamlit's issuer
-check ("invalid_claim: iss"), see README "Multi-user".
+check ("invalid_claim: iss"), see docs/multi-user.md "Limitations".
 """
 
 import json

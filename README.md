@@ -1,429 +1,92 @@
 # RAG Showcase
 
-RAG Showcase is a lightweight Retrieval-Augmented Generation (RAG) application for searching and asking questions about internal documents. It is built with Python 3.12, FastAPI, PostgreSQL with the pgvector extension, and sentence-transformers for embeddings.
+A document assistant built on **retrieval-augmented generation (RAG)**: connect a Dropbox folder, ask questions in plain language, and get answers that cite the passages they are based on. Each user sees only their own documents.
 
-The project is currently in early pre-release status and focuses on a document assistant pattern suitable for enterprise knowledge bases backed by local or cloud document stores.
+It is a compact, working reference for a RAG system: hybrid search on PostgreSQL/pgvector, citation checks, multi-user isolation and a low-cost Azure deployment that scales to zero. Status: **v2.1.0**, small private pilot, not production-hardened.
 
-## What this project does
+## Try it
 
-- Stores document chunks in a vector database
-- Embeds queries and matches relevant passages
-- Returns grounded search results via a FastAPI API
-- Answers questions using retrieved passages and an LLM provider
-- Includes sample local documents for testing and evaluation
+1. **Get an invite link:** contact the repository owner ([@adranale](https://github.com/adranale)).
+2. **Open the link and sign in** with a personal Microsoft account (outlook.com, hotmail.com, live.com, …). Work/school accounts are not supported yet.
+3. **Request access** (optionally with a short message). After the admin approves, reload the page.
+4. **My documents** → *Connect Dropbox* (read-only access) → enter a folder such as `/Documents/notes` → *Save folder* → *Sync now*.
+5. **Chat** → ask a question. Answers cite their sources (`[S1]`, `[S2]`, …); *View passages in context* shows the cited text.
 
-## Current API
+Good to know:
+- The first request after a quiet period can take 1–3 minutes: the apps scale to zero and the database is stopped when idle. The UI retries for you.
+- Supported files: PDF, TXT, Markdown, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`); up to 2000 files per sync.
+- You can disconnect Dropbox and delete all your indexed documents at any time (*My documents* → *Remove data*). The operator has technical access to the database; see [limitations](docs/multi-user.md#limitations-read-before-inviting-people).
 
-The application exposes the following endpoints:
-
-- `GET /health` — basic service health check
-- `GET /ready` — checks database availability and pgvector extension
-- `POST /search`, `POST /chat` — user-scoped retrieval / cited answers (need a signed user token, see "Multi-user mode (v2)")
-- `GET /me`, `POST /dropbox/authorize`, `POST /dropbox/callback`, `PUT /dropbox/folder`, `DELETE /dropbox`, `POST /sync`, `DELETE /me/documents` — per-user Dropbox connection and sync; `GET /me` also reports index statistics and the indexed Dropbox folders (including data imported before sign-in existed, which has no stored credentials)
-- `GET /documents/{id}/chunks` — passages of one of your documents in reading order (the UI's "View passages in context" dialog highlights the ones cited in an answer)
-- `GET /access-request`, `POST /access-request` — status of / send an access request with the invite code (signed-in Microsoft identity, no account needed)
-- `GET /admin/requests`, `POST /admin/requests/{id}/approve|refuse`, `GET /admin/users`, `PUT /admin/users/{id}/status`, `GET /admin/invite`, `POST /admin/invite` (new code) — admins only
-
-## Architecture
-
-- `app/main.py` — FastAPI app and route definitions
-- `app/db.py` — database connection helpers
-- `app/search.py` — hybrid retrieval: vector search plus keyword and file-name/folder-name matches (name matches weigh 3× more; folder names work for Dropbox only), fused with reciprocal rank fusion; needs `sql/003_hybrid_search.sql` (applied by `init_db.py`)
-- `app/generation.py` — answer generation from retrieved context
-- `data/sample/` — sample documents used for local development
-- `connectors/`, `ingest_remote.py` — Dropbox / Google Drive document sources
-- `tests/` — API and generation tests
-- `evaluation/` — evaluation scripts and result output
-
-## Local development
-
-### Prerequisites
-
-- Python 3.12
-- PostgreSQL with the `vector` extension enabled
-- Ollama installed and running if you want answer generation
-
-### Setup
-
-On Windows PowerShell:
-
-```powershell
-cd C:\...\rag-showcase
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-### Run the API
-
-```powershell
-uvicorn app.main:app --reload
-```
-
-Then open:
-
-- http://127.0.0.1:8000/docs for the FastAPI Swagger UI
-- http://127.0.0.1:8000/health for the health endpoint
-
-## Ingest from Dropbox or Google Drive
-
-`ingest_remote.py` reads TXT, Markdown, PDF, Word (`.docx`), Excel (`.xlsx`) and PowerPoint (`.pptx`) files (plus native Google Docs, exported as text) from a Dropbox or Google Drive folder, recursively, and stores them in the same `documents`/`chunks` tables as local files. Legacy `.doc`/`.xls`/`.ppt` are not supported and are skipped silently. Excel is read per sheet (cell values, first 5000 rows per sheet; formulas show their last cached value), PowerPoint per slide including tables and speaker notes. With **OCR enabled** (below), image files (`.png`, `.jpg`/`.jpeg`, `.tif`/`.tiff`, `.bmp`, `.heif`) and PDFs without a text layer are read as well. Run `embed_chunks.py` afterwards. Access is **read-only**; credentials only come from environment variables / `.env` (git-ignored) and are never logged or stored in the database.
-
-**OCR with Azure Document Intelligence (optional, billable):** set `DOCINTEL_ENDPOINT` (https URL) and `DOCINTEL_KEY` of an Azure AI Document Intelligence resource (create it yourself, e.g. `az cognitiveservices account create --kind FormRecognizer --sku <sku> ...`; check the SKU's page/size limits and current pricing in the Azure portal). Without both variables OCR is off: images are ignored and scanned PDFs fail as before. Files are sent to the Azure service for text extraction (prebuilt-read model); only PDFs without any extractable text and images are sent, never text-layer PDFs or Office files. Every OCR page is billed, so `DOCINTEL_MAX_PAGES` (default 1000 pages per run, `0` = unlimited) caps a run: files beyond the budget fail and are retried on the next run, which makes large backlogs resumable. Images whose smaller side is under `DOCINTEL_MIN_IMAGE_PIXELS` (default 100, `0` = off) are skipped as failed ("too small") without calling the service; this filters icons and logos. For the Azure job set the GitHub secrets `DOCINTEL_ENDPOINT` / `DOCINTEL_KEY` (and optionally the variable `DOCINTEL_MAX_PAGES`) before running the ingest workflow; `deploy/azure-ingest-job.ps1` stores them as job secrets. Note that the script replaces the job's env vars, so always re-supply them on later runs.
-
-```powershell
-python init_db.py                      # applies sql/002_remote_sources.sql (idempotent)
-python ingest_remote.py --provider dropbox --folder /Documents/rag
-python ingest_remote.py --provider google_drive --folder <drive-folder-id>
-python embed_chunks.py
-```
-Options: `--delete-removed` (hard-delete instead of tombstone), `--allow-empty` (allow removals when the remote folder lists no supported files).
-
-**Change tracking.** Each folder is one `source_connections` row (`dropbox` / `google_drive`, identified by the folder). Per file, `documents` stores the remote file ID (`external_file_id`), the remote revision (`source_version`: Dropbox `rev`, Drive `md5Checksum` or `version`), a content hash and `ingestion_status`. A re-run downloads and re-chunks only files whose revision changed or whose last attempt `failed`; if the revision changed but the extracted content did not, only the revision is updated. Files that vanished remotely are **tombstoned** by default: their chunks are deleted (so search never returns them) and the row stays with `ingestion_status = 'removed'` and `removed_at`; a file that reappears is re-ingested. Hard deletion is opt-in. Removals are applied only after the remote listing succeeded, and are skipped when the listing is empty (likely a wrong folder or permissions) unless `--allow-empty` is set. Files that fail to download or are rejected by a transient error are marked `failed` (hidden from search) and retried on the next run; the CLI then exits non-zero. Files that can never be processed (no text, encrypted, empty, too small for OCR) get status `unsupported` (`sql/004_unsupported_status.sql`) and are skipped, without download or OCR, until their remote revision changes; they do not make the CLI fail. Unsupported file types and files over 25 MB are skipped.
-
-### Dropbox setup
-1. Go to the [Dropbox App Console](https://www.dropbox.com/developers/apps) → *Create app* → *Scoped access* → *Full Dropbox* (or *App folder* to restrict to one folder).
-2. Under *Permissions* enable only `files.metadata.read` and `files.content.read`, then *Submit*.
-3. Note the *App key* and *App secret*.
-4. Obtain a long-lived refresh token once: open `https://www.dropbox.com/oauth2/authorize?client_id=<APP_KEY>&response_type=code&token_access_type=offline`, approve, and copy the code. Exchange it (keep the output private):
-   ```powershell
-   curl.exe -u "<APP_KEY>:<APP_SECRET>" -d "code=<CODE>&grant_type=authorization_code" https://api.dropboxapi.com/oauth2/token
-   ```
-   Use the `refresh_token` from the response. Set `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`. `--folder` is a path such as `/Documents/rag` (`/` = whole app scope). In the Azure workflow the folder is read from the `azure-test` environment **secret** `INGEST_FOLDER` (Settings → Environments → *Secrets*); there is no input for it, so GitHub masks the path in the public logs.
-
-### Google Drive setup (service account, recommended)
-1. In Google Cloud Console create a project, enable the **Google Drive API**, create a **service account** and add a JSON key (store it securely; never commit it).
-2. In Drive, **share the folder with the service account's e-mail** (Viewer is enough). The scope used is `drive.readonly`; `drive.file` would not see files you shared with it.
-3. Set `GOOGLE_SERVICE_ACCOUNT_JSON` to the *content* of the key file. `--folder` is the folder ID (the last part of the folder URL).
-4. Alternative (user OAuth): set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` (refresh token obtained for the `drive.readonly` scope).
-
-### Run inside Azure (Container Apps Job)
-`deploy/azure-ingest-job.ps1` creates/updates the job `rag-ingest` in the existing Container Apps environment (`cae-rag-showcase`). The job runs the **same image as the deployed `rag-api`** (read from the app; the image must be built from a commit that contains `ingest_job.py`, so redeploy `rag-api` with a new image first) and executes `python ingest_job.py`, i.e. `init_db.py` → `ingest_remote.py` → `embed_chunks.py`, configured by the env vars `PROVIDER` / `FOLDER` (1 CPU, 2 GiB, no retries by default, 1 h timeout). `DATABASE_URL` is reused from the `db-url` secret of `rag-api` (never printed, never stored in the repo); the PostgreSQL "allow Azure services" rule gives the job access, so no firewall rule is needed.
-
-The job bills only while an execution runs (scale-to-zero); Log Analytics ingestion and PostgreSQL are billed regardless. An optional cron schedule is available (`-Schedule`, UTC).
-
-Security: provider credentials and the DB URL are stored as Container Apps secrets, which anyone with Contributor (or higher) on the resource group can read. They are passed to `az` as command-line arguments (visible to local process listings on the machine running the script); use a dedicated read-only provider app/token.
-
-Run (PowerShell 7, `az login` done; export the provider credentials as env vars first):
-
-```powershell
-$env:DROPBOX_APP_KEY = '...'; $env:DROPBOX_APP_SECRET = '...'; $env:DROPBOX_REFRESH_TOKEN = '...'
-pwsh ./deploy/azure-ingest-job.ps1 -SubscriptionId <guid> -Suffix <suffix> -Provider dropbox -Folder /Documents/rag -StartNow
-# recurring (UTC cron): add -Schedule '0 3 * * *'; Google Drive: -Provider google_drive -Folder <folderId>
-```
-
-Rerunning updates the job in place; switching between manual and scheduled requires deleting the job first. Or use the manual workflow **Azure ingestion job** (`azure-ingest-job.yml`, environment `azure-test`: same Azure OIDC secrets as the deploy workflow, plus the provider secrets (`DROPBOX_*` / `GOOGLE_*`) and `INGEST_FOLDER` as `azure-test` environment secrets). The database must be running (auto-stop) when the job starts.
-
-> **Legacy (single-user, v1):** in multi-user mode (v2) this job writes documents without an owner that no user can see; users sync their own Dropbox from the UI instead. The `azure-test` secrets `DROPBOX_REFRESH_TOKEN` and `INGEST_FOLDER` were removed from the deployment environment; add them again only if you run this workflow against a v1 deployment.
-
-**Partial failures:** a file that cannot be processed (scanned PDF without text, encrypted PDF, unreadable file) is logged as `FAILED: <path>: <error type> | <reason>` (full Dropbox path, file name for other providers) (the reason, e.g. HTTP status, size, pages, is shown only for our own error types, never for messages that could contain document text) and retried on the next run, except permanent failures (shown as `Unsupported: <n>` in the summary), which are not retried until the file changes and do not fail the job. The job still embeds everything that was ingested and then exits non-zero, so the execution shows `Failed` while the other documents are searchable. Text files that are not UTF-8 are read as Windows-1252; NUL characters are removed. PDFs without a text layer are OCR'd when Document Intelligence is configured, otherwise they fail.
-
-View executions and logs:
-
-```powershell
-az containerapp job execution list --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --output table
-# logs: Log Analytics workspace of the environment (may lag a few minutes)
-az monitor log-analytics query --workspace <workspace-customer-id> --analytics-query "ContainerAppConsoleLogs_CL | where ContainerGroupName_s startswith '<execution-name>' | project TimeGenerated, Log_s | order by TimeGenerated asc"
-```
-
-Delete the job (credentials stored in it go away with it): `az containerapp job delete --resource-group rg-rag-showcase --name rag-ingest --subscription <guid> --yes`.
-
-### Change the Dropbox folder or reset the index (Azure)
-- **Change the folder:** update the `azure-test` secret `INGEST_FOLDER` and run **Azure ingestion job** again. Each folder is its own source; documents of the old folder stay indexed.
-- **Reset:** the manual workflow **Reset index (Azure)** (`reset-index-azure.yml`, environment `azure-test`) deletes **all** documents, chunks, embeddings and source connections (`TRUNCATE`; the schema stays, `init_db.py` re-creates the default local source). It only runs when `confirm` is exactly `RESET`, starts the database if auto-stop had stopped it, opens a temporary firewall rule for the runner and always removes it. The sample documents are deleted too: afterwards run **Ingest sample data (Azure)** and/or **Azure ingestion job**. There is no undo. Locally (Docker) use `reset_index.sh`.
-- **Diagnose:** the manual, read-only workflow **Azure diagnose** (`azure-diagnose.yml`, environment `azure-test`) runs `diagnose.py` inside Azure as a one-off run of the `rag-ingest` job (the job must exist). Given a `query` it prints document counts by status, failed file names, chunk/embedding counts, files whose title or text contain the query, and the top semantic hits with scores. It never prints document text. The result contains file names and titles, so the public GitHub log only shows a line count; read the output in Log Analytics (`ContainerAppConsoleLogs_CL`) or set `print_output=true` (anyone with a GitHub account can read workflow logs of a public repo). Use it to tell "not indexed" from "not retrieved".
-
-## Multi-user mode (v2)
-
-Invited users sign in with a Microsoft account, connect **their own Dropbox** and query **only their own documents**. Status: released as v2.0.0 and running on the Azure test deployment; the invite link / access requests below come after v2.0.0.
-
-**Test accounts:** this is a small private pilot (about 10 people). If you want to try it, contact the owner for an invite link.
-
-### How it works
-
-- **Isolation:** every row of `source_connections`, `documents`, `chunks`, `dropbox_credentials`, `sync_jobs`, `chat_usage` carries `user_id`; PostgreSQL row-level security (policy `owner_only`) filters by the session setting `app.user_id`, and queries additionally filter on `user_id`. The API and worker must connect as the non-owner role `rag_runtime` (RLS does not apply to the table owner / admin). Migration: `sql/005_multi_user.sql`.
-- **Login:** Streamlit `st.login("microsoft")`; the UI signs the claims (`oid`, `tid`, `email`) into a 5-minute token (`USER_TOKEN_SECRET`, 32+ chars, shared by UI and API). The API accepts only invited, `active` users. Personal accounts are bound by e-mail on first login; work accounts must be invited with `--tid/--oid` (the e-mail claim is not trusted).
-- **Invite link and access requests:** admins (`users.is_admin`; `OWNER_EMAIL` becomes admin in `init_db.py`, others via `manage_users.py admin <email>`) see an **Admin** page with one shared invite link (`<ui>/?invite=<code>`, regenerate to invalidate it), the open requests (approve/refuse) and the user list (enable/disable). Whoever opens the link signs in with Microsoft and sends a request with an optional message; the code survives the sign-in redirect in a 1-hour cookie (or can be pasted). Approval creates an `active` user bound to that exact Microsoft identity (tenant + object ID). Refused people can ask again after 7 days; at most 50 requests can be open. With Azure Communication Services configured (`ACS_EMAIL_CONNECTION_STRING`, `ACS_EMAIL_SENDER`, `UI_BASE_URL`), every admin gets an e-mail per new request (name, address, message, link). The runtime role has no access to the request table: everything goes through `SECURITY DEFINER` functions (`sql/006_access_requests.sql`) that check the caller's admin flag via `app.user_id`, the same trust boundary as row-level security.
-- **Dropbox:** per-user OAuth (PKCE, scopes `files.metadata.read` and `files.content.read`, offline refresh token). The refresh token is stored encrypted (Fernet, `TOKEN_ENCRYPTION_KEY`; comma-separated keys allow rotation). The redirect URI is the public UI root (`DROPBOX_REDIRECT_URI`).
-- **Sync:** `POST /sync` queues a job (one open job per user); `sync_worker.py` (a Container Apps Job triggered by the API through `WORKER_JOB_RESOURCE_ID`, or run manually) syncs and embeds per user. Quotas per user: `chats_per_day` (default 200), `files_per_sync` (default 2000; larger folders are rejected, never truncated). Logs contain counts and error types, never paths or text.
-- **Audit:** `audit_log` records Dropbox connect/disconnect, document deletion, access requests and admin decisions, user enable/disable and invite-link changes (logins and syncs are not audited yet).
-
-### Local setup
-
-```powershell
-# .env: DATABASE_URL (runtime role), ADMIN_DATABASE_URL (owner), USER_TOKEN_SECRET, TOKEN_ENCRYPTION_KEY,
-#       DROPBOX_APP_KEY, DROPBOX_APP_SECRET, DROPBOX_REDIRECT_URI, AUTH_REDIRECT_URI, AUTH_COOKIE_SECRET, MS_CLIENT_ID, MS_CLIENT_SECRET
-python -c "from app.crypto import generate_key; print(generate_key())"     # TOKEN_ENCRYPTION_KEY
-$env:OWNER_EMAIL = 'you@example.org'; python init_db.py                    # migrate; existing data goes to the owner
-$env:RUNTIME_DB_PASSWORD = '<24+ chars>'; python setup_runtime_role.py     # login password for rag_runtime
-python manage_users.py invite friend@outlook.com                           # personal account
-python manage_users.py invite colleague@corp.com --tid <tenant-id> --oid <object-id>
-python manage_users.py list                                                # also: enable|disable <email>, quota <email> --chats-per-day N --files-per-sync N
-python manage_users.py admin you@outlook.com                               # admin page (invite link, requests); unadmin <email> removes it
-python sync_worker.py                                                       # process queued sync jobs
-```
-
-Register an **Entra app** (redirect URI `<ui-url>/oauth2callback`, web platform, accounts: personal Microsoft accounts) and a **Dropbox app** (scopes above, redirect URI = UI root). `MS_TENANT` defaults to `consumers`.
-
-### Limitations (read before inviting people)
-
-- **Work/school accounts:** Streamlit's login fails for the `common`/`organizations` endpoints (templated issuer, streamlit/streamlit#11391). Only personal Microsoft accounts work until that is solved; the allowlist logic for work accounts is in place.
-- **The operator can still read data.** Database administrators (Azure admin credentials) bypass RLS, the app owner can grant themselves access, and embeddings can be inverted. The baseline reduces exposure (runtime role without admin rights, encrypted tokens, audit log, no content in logs) but is not a technical guarantee. Tell users this.
-- Key Vault is not used yet (env key; `app/crypto.py` is the swap point). Dropbox apps in development mode may cap the number of linked users; check before inviting. OCR budget is per job, not per day. No connection pool; retrieval is serialised.
-- `evaluation/run_evaluation.py` uses only the API key and no longer works against v2 endpoints.
-
-### Deploy v2 to Azure
-
-Prerequisite: the base deployment from "Deploy to Azure" (`azure.ps1`) exists. `azure-multiuser.ps1` then upgrades it in place (a fresh `azure.ps1` run still creates the v1-style UI with a password; run the upgrade right after it). Register the Entra app (redirect `https://<ui-fqdn>/oauth2callback`) and the Dropbox app (redirect `https://<ui-fqdn>/`) first; the UI FQDN is printed by the preflight.
-
-```powershell
-$env:MS_CLIENT_ID = '...'; $env:MS_CLIENT_SECRET = '...'          # Entra app (personal accounts)
-$env:DROPBOX_APP_KEY = '...'; $env:DROPBOX_APP_SECRET = '...'
-$env:OWNER_EMAIL = 'you@example.org'                              # receives the existing documents
-# optional OCR for the worker: DOCINTEL_ENDPOINT, DOCINTEL_KEY, DOCINTEL_MAX_PAGES
-pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -PreflightOnly   # read-only
-pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <id> -Suffix <x> -Image ghcr.io/adranale/rag-showcase:<commit-sha> -RunMigration   # changes Azure
-# add -EmailNotifications to e-mail admins about access requests (see below)
-```
-
-It creates the manual jobs `rag-migrate` (schema, `rag_runtime` role, owner assignment), `rag-sync` (worker) and `rag-admin` (`manage_users.py`); runs the migration and only then switches `rag-api` (connects as `rag_runtime` via the new `db-runtime-url` secret; user-token, token-encryption, Dropbox settings; system identity with `Container Apps Jobs Operator` on `rag-sync`, which needs Owner/User Access Administrator, otherwise it prints the exact command) and `rag-ui` (`python ui_start.py`, Microsoft login, `APP_PASSWORD` removed). Generated secrets are saved to the git-ignored `.env.azure.v2` (never rotated on rerun; rotating `TOKEN_ENCRYPTION_KEY` makes stored Dropbox tokens unreadable). The workflow **Azure multi-user setup** (`azure-multiuser.yml`, environment `azure-test`, preflight by default) does the same from GitHub; add the secrets `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `OWNER_EMAIL` and optionally the variable `MS_TENANT`.
-
-**E-mail notifications** (`-EmailNotifications`; workflow input `email_notifications`, default on): the script creates or reuses an Email Communication Service `acs-email-<suffix>` with an Azure-managed domain (sender `DoNotReply@<id>.azurecomm.net`, no DNS needed) and a Communication Service `acs-rag-<suffix>` (both `global`, data location Europe), and gives `rag-api` the connection string (secret `acs-email-connection`), `ACS_EMAIL_SENDER` and `UI_BASE_URL`. A subscription owner must register the resource provider once (the CI identity cannot): `az provider register --namespace Microsoft.Communication --subscription <id> --wait`. Cost: no fixed fee, charged per e-mail sent (check current ACS e-mail pricing); Azure-managed domains have low sending limits, and their mail may land in spam until the recipient marks it as safe.
-
-Invite users with the invite link on the **Admin** page (the `OWNER_EMAIL` account is admin). Fallback without an admin: `az containerapp job start -g <rg> -n rag-admin --command python --args manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The legacy `rag-ingest` job and the sample/reset workflows use the admin connection and write unowned documents that no user can see: do not use them in v2. Verified on Azure: the full upgrade run, the migration and the `Container Apps Jobs Operator` role assignment. Not yet verified: the `rag-sync` trigger from the API.
-
-## Environment and secrets
-
-This project expects configuration through environment variables or a local `.env` file (git-ignored). Keep secrets out of source control.
-
-Typical configuration includes:
-
-- database connection settings
-- LLM provider credentials or local model configuration
-- optional cloud connector credentials for Google Drive or Dropbox (`DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`, `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_REFRESH_TOKEN`; see "Ingest from Dropbox or Google Drive")
-
-## Data and privacy
-
-- `data/private/` is reserved for local private content and is git-ignored
-- Do not commit API keys, OAuth tokens, or document contents to the repository
-- Follow the least-privilege OAuth model for external integrations
-
-## Example usage
-
-Search for relevant passages:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/search" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"What is the volunteer handbook policy?","top_k":3}'
-```
-
-Generate an answer from retrieved context:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/chat" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"What is the volunteer handbook policy?","top_k":3}'
-```
-
-## Azure deployment: architecture, frameworks and processes
-
-This section describes what the `azure-deployment` branch adds on top of the local application. The step-by-step commands follow in "Deploy to Azure".
-
-### Architecture
-
-```mermaid
-flowchart LR
-    user([User]) -->|HTTPS, UI password| ui
-    subgraph rg[Resource group rg-rag-showcase, francecentral]
-        subgraph cae[Container Apps environment + Log Analytics]
-            ui[rag-ui<br/>Streamlit, public<br/>0.5 CPU / 1 GiB]
-            api[rag-api<br/>FastAPI, internal only<br/>1 CPU / 2 GiB]
-        end
-        pg[(PostgreSQL 16 Flexible Server<br/>B1ms + pgvector)]
-        aoai[Azure OpenAI<br/>gpt-4.1-mini, GlobalStandard]
-    end
-    ui -->|HTTPS + X-API-Key| api
-    api -->|SQL over TLS, cosine search| pg
-    api -->|chat completions| aoai
-    gha[GitHub Actions] -.->|OIDC, deploy + ingest| rg
-    ghcr[(ghcr.io image)] -.->|anonymous pull| cae
-```
-
-| Component | Role |
-|---|---|
-| `rag-ui` (Streamlit, `chat_ui.py`, started by `ui_start.py`) | Only public endpoint. Microsoft login (`st.login`), then forwards calls to the API with a short-lived signed user token plus the shared `X-API-Key`. |
-| `rag-api` (FastAPI, `app/`) | Internal ingress only. Embeds the question locally, runs the pgvector search, calls Azure OpenAI, validates the citations and returns the answer. |
-| PostgreSQL Flexible Server | Stores `documents`, `chunks` and the embeddings (`vector` extension, cosine distance). TLS is required. |
-| Azure OpenAI | Generates the cited JSON answer (`GENERATION_PROVIDER=azure_openai`). |
-| Embeddings | `sentence-transformers` on CPU inside the container image; the model is baked into the image so scale-from-zero does not download it. |
-| Container Apps environment | Hosts both apps (0–1 replicas, scale to zero) and sends logs to Log Analytics. |
-| `ghcr.io/adranale/rag-showcase` | One image for both apps. The UI overrides the start command; the default `CMD` serves FastAPI on `0.0.0.0:8000`. |
-
-### Technical frameworks
+## Tech stack
 
 | Area | Technology |
 |---|---|
-| Language / API | Python 3.12, FastAPI, Uvicorn, Pydantic |
-| UI | Streamlit |
-| Retrieval | PostgreSQL 16 + pgvector, `sentence-transformers` (CPU torch wheels), psycopg |
-| Generation | Azure OpenAI chat completions (Ollama for local use) |
-| Container | Docker (`python:3.12-slim`, non-root user, `linux/amd64`) |
-| Hosting | Azure Container Apps, Azure Database for PostgreSQL Flexible Server, Azure OpenAI |
-| Automation | PowerShell 7 + Azure CLI (`deploy/azure.ps1`), GitHub Actions with OIDC |
-| Tests | pytest (`tests/test_deploy_script.py` checks the script and workflows without Azure) |
+| Backend | Python 3.12, FastAPI, Pydantic |
+| UI | Streamlit (Microsoft sign-in) |
+| Vector store | PostgreSQL 16 + pgvector, full-text search |
+| Embeddings | sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, CPU) |
+| LLM | Azure OpenAI `gpt-4.1-mini` (Ollama `llama3.2:3b` locally) |
+| Documents | Dropbox API (OAuth, read-only); pypdf, python-docx, openpyxl, python-pptx; optional OCR with Azure Document Intelligence |
+| Hosting | Docker, Azure Container Apps, Azure Database for PostgreSQL, GitHub Actions (OIDC) |
+| Tests | pytest, Ruff |
 
-### Request flow
-1. The user logs in to the UI and asks a question.
-2. The UI calls `POST /chat` on the internal API (HTTPS, `X-API-Key`).
-3. The API embeds the question, searches `chunks` (only rows with the current `embedding_model` and `ingestion_status = 'indexed'`) and builds a prompt from the top passages, which are treated as untrusted.
-4. Azure OpenAI returns JSON; the API requires `citation_ids` to be a non-empty subset of the supplied `S<n>` IDs that includes every inline `[S<n>]`, otherwise it answers with an error (502). Insufficient evidence returns no citations.
-5. The UI shows the answer with its sources.
+## How it works
 
-### Processes
-- **Image build and deploy** (`build-and-deploy-image.yml`): builds `linux/amd64` on pushes to `main` / `azure-deployment` that touch the app, `Dockerfile`, `requirements.txt` or the workflow, and pushes `ghcr.io/adranale/rag-showcase:<full-commit-sha>`. Deployments use the immutable SHA tag; `latest` only comes from `main`.
-- **Preflight** (`deploy/azure.ps1 -PreflightOnly`): creates nothing. Checks tools, the explicitly given subscription, region, PostgreSQL restriction, names, image pullability and platform, and OpenAI model/SKU quota. `-ProbePostgres` proves PostgreSQL can really be created by creating and deleting a throwaway server.
-- **Provisioning** (`deploy/azure.ps1`, or the `Deploy to Azure` workflow): resource group → PostgreSQL + `VECTOR` extension + database + firewall → Azure OpenAI account and deployment → Container Apps environment → API app (internal) → UI app (public). Generated secrets are saved to `.env.azure` first, never printed, and stored as Container Apps secrets. Every `az` call goes through a helper that adds `--subscription`, uses a safe operation label and redacts secrets in errors.
-- **Ingestion**: `init_db.py` → `ingest_text.py` → `embed_chunks.py` against the database, either from your machine (needs outbound port 5432) or with the `Ingest sample data (Azure)` workflow, which opens a temporary firewall rule for the runner and always removes it.
-- **Authentication to Azure from CI**: OIDC federated credential bound to the `azure-test` GitHub environment, which requires a reviewer's approval for every run. No Azure password is stored in GitHub.
-- **Teardown**: manual only (see Cleanup).
-- **Idle auto-stop** (optional, `deploy/azure-autostop.ps1`): a scheduled job stops PostgreSQL after 30 idle minutes; the API starts it again on demand (managed identities, Contributor on the server only).
-
-### Lessons from the first deployments
-- PostgreSQL availability is subscription- and region-specific. `az postgres flexible-server list-skus` can report a size as available even though creation fails with `SkuNotAvailable`, and ARM validation does not catch it. This subscription could not create PostgreSQL in `westeurope` or `swedencentral`, which is why the default is `francecentral` and why `-ProbePostgres` exists.
-- Azure OpenAI quota is per model, SKU and region. `gpt-4.1-mini` with `GlobalStandard` had free quota in `francecentral`; `gpt-4o-mini` did not.
-- Azure CLI argument names for `db create` and firewall rules differ between versions; the scripts try both forms.
-- A deleted PostgreSQL server name can stay reserved for a few minutes.
-- Calls such as reading an app FQDN can fail transiently; the script retries such errors and can be re-run safely (resume mode).
-
-### Known limitations
-Prototype, sample data only, **not production-hardened**: the API uses the database administrator account, PostgreSQL allows all Azure services, secrets are visible as command arguments while `az` runs, there are no budget alerts, and a cold start after idle takes about 30–60 s. The Azure CLI `containerapp exec` command can drop its connection; if it does, use the UI to verify.
-
-## Deploy to Azure (small test deployment, sample data only)
-
-Architecture: PostgreSQL Flexible Server (Burstable B1ms, pgvector) + Azure OpenAI (`gpt-4.1-mini`, GlobalStandard deployment of 10K capacity, i.e. processed in Azure's global pool; default region `francecentral`; override with `-OpenAiModel`/`-OpenAiSku`/`-Location`) + two Azure Container Apps (internal API, public password-protected UI) that scale to zero. Embeddings stay local (CPU) inside the image. This is a prototype, **not production-hardened**.
-
-Commands below use PowerShell 7 (`pwsh`) on macOS (`brew install powershell azure-cli`); run them from the repository root.
-
-### 1. Image
-The `Build and deploy image` workflow builds `linux/amd64` and pushes `ghcr.io/adranale/rag-showcase:<full-commit-sha>` for every push to `main` / `azure-deployment` that touches the app, `Dockerfile`, `requirements.txt` or the workflow (run it manually via *workflow_dispatch* otherwise). `latest` is only updated from `main`. The script defaults to the image of your current commit; pass `-Image ghcr.io/adranale/rag-showcase:<sha>` to use another one. After the first run set the package to **Public** (GitHub → Packages → Package settings), because Container Apps pull anonymously. The image contains no secrets.
-
-On pushes to `main` the workflow then runs a **deploy** job (environment `azure-test`, so it waits for your approval) that updates `rag-api`, `rag-ui` and `rag-idle-stop` to the new SHA tag. The suffix comes from the `AZURE_SUFFIX` variable of that environment; a manual run can override it and can skip the deploy (`deploy` = false). Other branches only build.
-
-### 2. Safe checks (create nothing)
-```powershell
-az login
-az account list --output table          # pick the NGO subscription ID
-pwsh ./deploy/azure.ps1 -SubscriptionId <subscription-id> -Suffix <unique-lowercase-id> -PreflightOnly
-```
-Preflight verifies the subscription (name, ID, tenant, resource group and region are shown), tools, region, whether PostgreSQL is restricted for your subscription in that region, resource names, image pullability and `linux/amd64`, and the OpenAI model/SKU (quota is checked when Azure exposes it). The default preflight is read-only. Azure's SKU list can report a PostgreSQL size as available even though the subscription cannot create it (`SkuNotAvailable`); add `-ProbePostgres` to create and immediately delete a throwaway server in a temporary resource group (a few cents, several minutes) as a real proof. Anything it cannot verify is listed as a manual check. It never switches model, region or SKU for you. The script never infers NGO funding from a subscription name: check grant/credit coverage, balance and expiry in Azure billing yourself.
-
-### 3. Provision (creates billable resources)
-```powershell
-pwsh ./deploy/azure.ps1 -SubscriptionId <subscription-id> -Suffix <unique-lowercase-id>
-```
-It asks for confirmation and the UI password, writes the generated credentials to the git-ignored `.env.azure` (mode 600) **before** creating anything, stores them as Container Apps secrets and never prints them.
-
-**Safe to re-run (resume mode).** The script detects which resources already exist in the resource group (PostgreSQL, Azure OpenAI account and deployment, Container Apps environment, API and UI apps) and only creates what is missing, so a run that failed halfway (for example on a transient Azure error) can simply be repeated with the same `-SubscriptionId`, `-Suffix` and `-Image`:
-- **Credentials are never rotated.** They are reused from `.env.azure`, or, if the file is absent (for example after a CI run), read from the secrets of the existing `rag-api` app. `.env.azure` is never overwritten. If the PostgreSQL server exists but no credentials can be found, the script stops with recovery steps instead of resetting the admin password.
-- **Existing apps** are only moved to the given `-Image`; their secrets and settings (including the UI password and the auto-stop settings) are left unchanged. The UI password is only asked for when the UI app has to be created. To change it: `az containerapp secret set`.
-- A **stopped PostgreSQL server** (idle auto-stop) is started first.
-- **Transient Azure errors** (`InternalServerError`, throttling, a just-deleted server name that is still reserved) are retried up to 3 times with a pause.
-- A name that resolves but is **not** in your resource group is reported as taken (choose another `-Suffix`). Quota is not re-checked for a deployment that already exists.
-- Resume mode only reconciles what the script created; it does not repair resources you changed by hand, change the region, or resize existing resources. The local ingestion firewall rule `allow-my-ip` is created again on every run; remove it afterwards.
-
-### 4. Initialise and ingest sample data
-```powershell
-python3.12 -m venv .venv
-. .venv/bin/Activate.ps1
-pip install -r requirements.txt
-$env:DATABASE_URL = ((Get-Content .env.azure | Where-Object { $_ -like 'DATABASE_URL=*' }) -split '=', 2)[1]
-python init_db.py       # applies sql/*.sql incl. CREATE EXTENSION vector
-python ingest_text.py   # data/sample only
-python embed_chunks.py  # downloads the embedding model on first run
-```
-Do not run `ingest_pdfs.py` / `reindex_all.sh` against Azure unless the PDFs are meant to be public (`data/private/` is personal). When ingestion is done, remove your local firewall rule (the command is printed by the script):
-```powershell
-az postgres flexible-server firewall-rule delete --resource-group rg-rag-showcase --name pg-rag-<suffix> --rule-name allow-my-ip --subscription <subscription-id> --yes
+```mermaid
+flowchart LR
+    user([User]) -->|HTTPS, Microsoft sign-in| ui[UI<br/>Streamlit]
+    ui -->|signed user token| api[API<br/>FastAPI]
+    api -->|queue sync| worker[Sync worker<br/>Container Apps Job]
+    worker -->|read-only| dropbox[(Dropbox)]
+    worker -->|chunks + embeddings| pg[(PostgreSQL<br/>+ pgvector)]
+    api -->|hybrid search| pg
+    api -->|prompt with passages| llm[Azure OpenAI]
 ```
 
-### 5. Verify
-- **UI / login / generation:** open the printed `https://…azurecontainerapps.io` URL, log in, ask e.g. “Can volunteers claim travel costs?”. A cited answer confirms UI → API (HTTPS, `X-API-Key`), retrieval and Azure OpenAI together. The first request after idle takes about 30–60 s (cold start).
-- **API `/health`, `/ready`, `/search` (internal ingress only, no public `curl`):** run inside the UI container, which has `API_KEY` and `RAG_API_BASE_URL` set:
-  ```powershell
-  az containerapp exec --resource-group rg-rag-showcase --name rag-ui --subscription <subscription-id> `
-    --command "python -c \"import os,httpx;b=os.environ['RAG_API_BASE_URL'];h={'X-API-Key':os.environ['API_KEY']};print(httpx.get(b+'/health').json(),httpx.get(b+'/ready').json(),httpx.post(b+'/search',headers=h,json={'question':'travel costs'}).json()['count'])\""
-  ```
-  (`/ready` shows `vector_extension` only after `init_db.py` ran.)
+**Indexing.** The sync worker lists the user's Dropbox folder, downloads only new or changed files, extracts the text, splits it into chunks and embeds each chunk. Chunks and vectors are stored in PostgreSQL, tagged with the user's ID.
 
-### Deploy from GitHub Actions (alternative to steps 2–4)
-The `Deploy to Azure` workflow (manual *Run workflow*) runs the same script, then initialises the DB and ingests the sample data, then removes the CI firewall rule. It signs in with OIDC (no stored Azure password). `preflight_only` is on by default; untick it to create resources. `probe_postgres` (preflight only) runs the `-ProbePostgres` check.
+**Answering.**
+1. The question is embedded with the same model.
+2. Hybrid search combines three rankings with reciprocal rank fusion: vector similarity, keyword search and file/folder-name matches.
+3. The top passages go to the LLM, which must answer in JSON and cite passage IDs.
+4. The API rejects answers whose citations do not match the supplied passages; if the documents do not contain the answer, it says so.
 
-If provisioning succeeded but the ingestion step did not run or failed (for example a transient Azure error), do not re-provision: run the manual `Ingest sample data (Azure)` workflow with the same `suffix`. It reads the connection string from the `rag-api` app's `db-url` secret, opens a temporary firewall rule for the runner, runs `init_db.py`, `ingest_text.py` and `embed_chunks.py`, and always removes the rule again. This also works when port 5432 is blocked on your own network.
+**Isolation and access.** PostgreSQL row-level security plus `user_id` filters keep users' data apart. New users join through an invite link and an access request that an admin approves in the app. Dropbox tokens are stored encrypted.
 
-One-time setup:
-```powershell
-$sub = '<subscription-id>'
-az ad app create --display-name rag-showcase-github --query appId -o tsv        # -> <client-id>
-az ad sp create --id <client-id>
-az role assignment create --assignee <client-id> --role Contributor --scope /subscriptions/$sub
-az ad app federated-credential create --id <client-id> --parameters '{"name":"github-azure-test","issuer":"https://token.actions.githubusercontent.com","subject":"<subject>","audiences":["api://AzureADTokenExchange"]}'
-```
-`<subject>` is `repo:adranale/rag-showcase:environment:azure-test`. If the login fails with `AADSTS700213` and the error shows a different subject, the repository uses ID-based OIDC claims (`repo:<owner>@<owner-id>/<repo>@<repo-id>:environment:azure-test`): use exactly the subject shown in that error message.
-In GitHub: Settings → Environments → create `azure-test` (add yourself as required reviewer), and add these **environment secrets**:
+**Cost.** The apps scale to zero; an idle job stops PostgreSQL after 30 minutes and the API starts it again on demand.
 
-| Secret | Value |
+## Repository layout
+
+| Path | Content |
 |---|---|
-| `AZURE_CLIENT_ID` | app registration (client) ID from above |
-| `AZURE_TENANT_ID` | Azure tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | the NGO subscription ID |
-| `RAG_UI_PASSWORD` | UI login password (8–64 chars: letters, digits, `. _ ~ + @ #` or `-`); v1 only — v2 uses Microsoft sign-in and the secret was removed from the deployment environment |
+| `app/` | FastAPI app: routes (`main.py`), search, generation, users, access requests, Dropbox OAuth, sync jobs |
+| `chat_ui.py`, `ui_helpers.py`, `ui_start.py` | Streamlit UI |
+| `connectors/` | Dropbox / Google Drive sources, text extraction, OCR, chunking, change tracking |
+| `sync_worker.py`, `embed_chunks.py` | Per-user sync and embedding |
+| `sql/` | Database schema and migrations (applied by `init_db.py`) |
+| `deploy/`, `.github/workflows/` | Azure deployment scripts and CI/CD |
+| `tests/`, `evaluation/` | Tests and retrieval evaluation |
 
-The credentials generated in CI are discarded with the runner. Retrieve them later from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`). The workflow runs the same script, so it is resumable too: after a failed run, run it again with the same `suffix` and it continues with what is missing, taking the credentials from the existing `rag-api` secrets. Deleting the resource group is only needed to start from scratch. To delete it from GitHub, run the **Destroy Azure deployment** workflow (same `azure-test` environment/approval; you must retype the resource group name to confirm).
+## Run locally
 
-### Idle auto-stop and on-demand start (optional, saves the PostgreSQL cost)
-Container Apps already scale to zero and start with the first request. PostgreSQL does not (it is the main cost, billed per hour while running). `deploy/azure-autostop.ps1` adds, to an existing deployment:
-- the scheduled Container Apps Job `rag-idle-stop` (every 10 minutes, UTC) that runs `idle_stop.py`: it stops the server when `rag-api` received **no requests in the last 30 minutes** (`-IdleMinutes`) and the server has been up for about that long (a freshly started server, e.g. for an ingestion run, gets a grace period based on its CPU metric history). If the metric check fails it does nothing (fail closed). Azure also restarts a stopped server by itself after 7 days; the job stops it again.
-- a wake-up in the API (`app/wake.py`): when the database cannot be reached and `POSTGRES_RESOURCE_ID` is set, the API asks Azure to start the server (at most once a minute) and answers `503` with “database is starting, retry in 1–3 minutes”, which the UI shows. The first question after a stop therefore needs one retry.
+Needs Python 3.12, Docker and, for answers, [Ollama](https://ollama.com) with `llama3.2:3b`.
 
 ```powershell
-pwsh ./deploy/azure-autostop.ps1 -SubscriptionId <subscription-id> -Suffix <suffix> -Image ghcr.io/adranale/rag-showcase:<commit-sha>
-```
-The image must be built from a commit that contains `app/wake.py` and `idle_stop.py` (the `Build and deploy image` workflow does this for `azure-deployment`). The script is safe to re-run. It restarts `rag-api` with that image, enables system-assigned managed identities (no stored credentials) and grants them **Contributor on the PostgreSQL server only** (start/stop) plus **Monitoring Reader on `rag-api`** (job). Creating role assignments needs *Owner*, *User Access Administrator* or *Role Based Access Control Administrator*; the CI identity has only *Contributor*, so run this script yourself with `az login` (or grant that role to the CI identity first). Role assignments can take a few minutes to apply.
-
-Notes: the job does not know about direct database use. After a manual start (for example ingestion from your machine) the server is stopped 30–40 minutes later unless the API receives requests; the `Ingest sample data (Azure)` workflow does not start a stopped server either, so start it first (`az postgres flexible-server start --name pg-rag-<suffix> --resource-group rg-rag-showcase --subscription <subscription-id>`). A stopped server still bills for its storage. To remove the feature: `az containerapp job delete --name rag-idle-stop --resource-group rg-rag-showcase --subscription <subscription-id>` and remove `POSTGRES_RESOURCE_ID` from `rag-api`. Verified on the test deployment: the job stopped the server after 30 idle minutes, the next question returned the "database is starting" message, and a retry a few minutes later gave a cited answer.
-
-### Security and networking notes
-- PostgreSQL is created with `--public-access 0.0.0.0`, Azure's “allow Azure services” rule: **any resource in any Azure tenant** may attempt to connect. Access still requires the credentials; TLS is required (`require_secure_transport=on`, `sslmode=require`). Your machine gets a single `/32` rule (`allow-my-ip`) for ingestion; delete it afterwards.
-- The API connects with the PostgreSQL administrator (`ragadmin`), and the same account is used for schema creation and ingestion. A separate least-privilege runtime role is a recommended follow-up, not implemented. Private networking (VNet/private endpoints) would add cost and complexity and is not used.
-- The API is internal-only and requires the `X-API-Key`; the public UI requires the password. Secrets are passed to `az` as arguments (visible in the local process list while it runs).
-
-### Cost notes
-- The OpenAI deployment capacity is a **rate/quota limit, not a monetary budget**. Budget alerts in Cost Management only **notify**; they do not stop spending.
-- Scaling Container Apps to zero does not make the idle deployment free: PostgreSQL (compute and 32 GiB storage), the OpenAI account, Log Analytics/logging and other resources are billed separately. Stopping PostgreSQL (manually, or automatically with the idle auto-stop above) removes the compute charge but not the storage charge. No price estimate is given here; check Azure pricing and your NGO credit terms.
-
-### Cleanup
-This deletes **everything** in the resource group, including the database and its data. Be sure the name is the resource group created by this script:
-```powershell
-az group delete --name rg-rag-showcase --subscription <subscription-id>
-rm .env.azure
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+docker compose up -d db                  # PostgreSQL + pgvector on localhost:5432
+python init_db.py; python ingest_text.py; python embed_chunks.py   # sample data
+uvicorn app.main:app --reload            # API docs: http://127.0.0.1:8000/docs
+pytest                                   # some tests need the database
 ```
 
-Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on the user endpoints). `APP_PASSWORD` was removed in v2 (Microsoft login replaces it). See `.env.azure.example` and "Multi-user mode (v2)".
+`docker compose up` starts database, API and UI together; sign-in and Dropbox need app registrations and secrets in `.env` (see [multi-user setup](docs/multi-user.md#local-setup)).
 
-## Repository conventions
+## More documentation
 
-- Use async route handlers for I/O-bound work
-- Prefer type hints and Pydantic models
-- Keep route handlers thin and move logic into modules under `app/`
-- Validate with pytest when adding functionality
+- [Multi-user mode](docs/multi-user.md): isolation, login, invite links, API endpoints, local setup, limitations
+- [Ingestion](docs/ingestion.md): command-line ingestion from local files, Dropbox or Google Drive, OCR, change tracking
+- [Azure deployment](docs/deployment.md): architecture, provisioning, multi-user upgrade, auto-stop, security, cost, cleanup
+- [Security policy](SECURITY.md)
 
-## Release status
-
-Latest release: **v2.0.0** (multi-user mode). Releases are tagged `vX.Y.Z` on `main`; see the GitHub releases for the notes.
-
-The `main` branch is kept stable while ongoing work continues on feature branches.
-
-## Project status
-
-This is an early-stage showcase and is intended to demonstrate a practical RAG implementation for document retrieval and answer generation. It is not yet production-hardened and should be treated as a development-focused reference project.
-
+Releases are tagged `vX.Y.Z` on `main` (see GitHub releases); `main` is kept stable.
