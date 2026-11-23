@@ -1,3 +1,4 @@
+import importlib
 import re
 import shutil
 import subprocess
@@ -131,7 +132,7 @@ def test_multiuser_script_is_safe_and_ordered():
     assert text.index("# --- Migration") < text.index("# --- rag-api")
     assert "The apps were NOT switched" in text
     # The UI start command must not contain arguments that start with a dash.
-    assert "--command python --args ui_start.py" in text
+    assert "--command python --args ui/start.py" in text
     assert "APP_PASSWORD" in text
     # The e-mail key is masked and in place before the API is reconfigured.
     assert "$script:SecretValues.Add($acsConnection)" in text
@@ -149,9 +150,48 @@ def test_multiuser_workflow_is_pinned_and_environment_protected():
 
 
 def test_migrate_job_requires_admin_url_and_runtime_password(monkeypatch):
-    import migrate_job
+    from ops import migrate_job
 
     monkeypatch.delenv("ADMIN_DATABASE_URL", raising=False)
     monkeypatch.delenv("RUNTIME_DB_PASSWORD", raising=False)
     with pytest.raises(SystemExit):
         migrate_job.main()
+
+# Commands of Azure apps/jobs created before the package layout (see the root shims).
+LEGACY_ENTRY_POINTS = (
+    "ui_start.py",
+    "sync_worker.py",
+    "idle_stop.py",
+    "manage_users.py",
+    "migrate_job.py",
+)
+
+
+def test_container_commands_point_to_files_in_the_image():
+    root = SCRIPT.parent.parent
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    texts = [path.read_text(encoding="utf-8") for path in (root / "deploy").glob("*.ps1")]
+    texts.append((root / "compose.yaml").read_text(encoding="utf-8"))
+    paths = set()
+    for text in texts:
+        paths.update(re.findall(r"--args (?:run )?([\w/]+\.py)", text))
+        paths.update(re.findall(r"'python', '([\w/]+\.py)'", text))
+        paths.update(re.findall(r'"python", "([\w/]+\.py)"', text))
+    assert {
+        "ui/start.py",
+        "ui/chat.py",
+        "ops/idle_stop.py",
+        "ops/manage_users.py",
+        "ops/migrate_job.py",
+        "ingestion/sync_worker.py",
+    } <= paths
+    for path in paths | set(LEGACY_ENTRY_POINTS):
+        assert (root / path).is_file(), path
+        package = path.split("/")[0]
+        assert (f" {package}/ ./{package}/" if "/" in path else path) in dockerfile, path
+
+
+@pytest.mark.parametrize("name", LEGACY_ENTRY_POINTS)
+def test_legacy_entry_points_still_resolve(name):
+    module = importlib.import_module(name.removesuffix(".py"))
+    assert callable(module.main)

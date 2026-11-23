@@ -9,8 +9,10 @@ on:
     branches: [main, azure-deployment, feature/storage-connectors]
     paths:
       - app/**
-      - chat_ui.py
       - connectors/**
+      - ingestion/**
+      - ops/**
+      - ui/**
       - sql/**
       - "*.py"
       - Dockerfile

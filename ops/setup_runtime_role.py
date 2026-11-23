@@ -1,6 +1,6 @@
 """Give the `rag_runtime` role a login password (run once with the admin connection).
 
-    ADMIN_DATABASE_URL=... RUNTIME_DB_PASSWORD=... python setup_runtime_role.py
+    ADMIN_DATABASE_URL=... RUNTIME_DB_PASSWORD=... python -m ops.setup_runtime_role
 
 The role is created without login by sql/005_multi_user.sql; its password is never
 stored in the repository. Afterwards point the API/worker DATABASE_URL at
@@ -30,7 +30,7 @@ def main() -> None:
             "SELECT 1 FROM pg_roles WHERE rolname = 'rag_runtime';"
         ).fetchone()
         if not exists:
-            raise SystemExit("Role rag_runtime is missing. Run init_db.py first.")
+            raise SystemExit("Role rag_runtime is missing. Run python -m ops.init_db first.")
         conn.execute(
             sql.SQL("ALTER ROLE rag_runtime WITH LOGIN PASSWORD {}").format(
                 sql.Literal(password)

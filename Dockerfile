@@ -4,6 +4,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUTF8=1 \
     PYTHONIOENCODING=utf-8 \
+    PYTHONPATH=/app \
     HF_HOME=/home/appuser/.cache/huggingface \
     PIP_CERT=/etc/ssl/certs/ca-certificates.crt \
     REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
@@ -30,21 +31,24 @@ RUN useradd --create-home appuser \
     && mkdir -p /home/appuser/.cache/huggingface \
     && chown -R appuser:appuser /home/appuser/.cache
 
+# PYTHONPATH=/app lets the Azure commands run package files directly
+# (e.g. `python ops/idle_stop.py`; az cannot pass `-m` as an argument).
 COPY --chown=appuser:appuser app/ ./app/
-COPY --chown=appuser:appuser chat_ui.py ui_helpers.py ui_start.py idle_stop.py ./
-# Remote ingestion job (deploy/azure-ingest-job.ps1) runs from the same image.
+COPY --chown=appuser:appuser ui/ ./ui/
+COPY --chown=appuser:appuser ingestion/ ./ingestion/
+COPY --chown=appuser:appuser ops/ ./ops/
 COPY --chown=appuser:appuser connectors/ ./connectors/
 COPY --chown=appuser:appuser sql/ ./sql/
-COPY --chown=appuser:appuser init_db.py ingest_text.py ingest_remote.py \
-    ingest_job.py embed_chunks.py chunk_pdf.py extract_pdf.py \
-    sync_worker.py manage_users.py setup_runtime_role.py migrate_job.py ./
+# Compatibility entry points for commands of existing Azure apps/jobs.
+COPY --chown=appuser:appuser ui_start.py sync_worker.py idle_stop.py \
+    manage_users.py migrate_job.py ./
 
 USER appuser
 
 # Bake the embedding model into the image so scale-from-zero starts do not
 # download it.
 RUN python -c "from sentence_transformers import SentenceTransformer; \
-from app.search import MODEL_NAME; \
+from app.config import MODEL_NAME; \
 SentenceTransformer(MODEL_NAME, device='cpu')"
 
 EXPOSE 8000 8501

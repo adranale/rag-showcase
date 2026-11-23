@@ -1,18 +1,80 @@
 import hashlib
 import io
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.config import MODEL_NAME
 from connectors.base import DocumentError, PermanentDocumentError
 from connectors.extract import EXTRACTORS
 from connectors.ocr import DocumentIntelligence, min_image_pixels
-from ingest_text import split_paragraphs
 
+# Stored per chunk; changing a version string re-chunks the affected documents.
+PDF_CHUNKING_VERSION = "page-token-window-v1"
 TEXT_CHUNKING_VERSION = "paragraph-token-window-v1"
 OFFICE_CHUNKING_VERSION = "office-token-window-v1"
 OCR_CHUNKING_VERSION = "ocr-page-token-window-v1"
 OVERLAP = 16
+
+
+def split_paragraphs(text: str) -> list[str]:
+    return [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", text)
+        if paragraph.strip()
+    ]
+
+
+def split_page(text, tokenizer, max_tokens, overlap, model_limit):
+    """Split text into token windows without decoding token fragments."""
+    encoded = tokenizer(
+        text,
+        add_special_tokens=False,
+        truncation=False,
+        return_offsets_mapping=True,
+    )
+    offsets = encoded["offset_mapping"]
+
+    start = 0
+
+    while start < len(offsets):
+        end = min(start + max_tokens, len(offsets))
+
+        # Retokenize the actual substring: its token count can differ
+        # slightly from its count within the complete page.
+        while end > start:
+            char_start = offsets[start][0]
+            char_end = offsets[end - 1][1]
+            chunk_text = text[char_start:char_end]
+
+            token_count = len(
+                tokenizer(
+                    chunk_text,
+                    add_special_tokens=True,
+                    truncation=False,
+                )["input_ids"]
+            )
+
+            if token_count <= model_limit:
+                break
+
+            end -= 1
+        else:
+            raise ValueError("Unable to create a chunk within the token limit.")
+
+        if chunk_text.strip():
+            yield {
+                "text": chunk_text,
+                "token_count": token_count,
+                "char_start": char_start,
+                "char_end": char_end,
+            }
+
+        if end == len(offsets):
+            break
+
+        start = max(start + 1, end - overlap)
 
 
 @dataclass(frozen=True)
@@ -45,8 +107,6 @@ class PipelineChunker:
             return
         from sentence_transformers import SentenceTransformer
 
-        from chunk_pdf import MODEL_NAME
-
         model = SentenceTransformer(MODEL_NAME, device="cpu")
         if not model.tokenizer.is_fast:
             raise RuntimeError("A fast tokenizer is required.")
@@ -57,8 +117,6 @@ class PipelineChunker:
         )
 
     def _windows(self, text: str):
-        from chunk_pdf import split_page
-
         return split_page(
             text, self._tokenizer, self._budget, OVERLAP, self._model_limit
         )
@@ -177,8 +235,6 @@ class PipelineChunker:
     def _chunk_pdf(self, data: bytes) -> ChunkedDocument:
         from pypdf import PdfReader
 
-        from chunk_pdf import CHUNKING_VERSION
-
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
             raise PermanentDocumentError("Encrypted PDFs are not supported.")
@@ -207,5 +263,5 @@ class PipelineChunker:
                 )
             return self._ocr_document(data, len(reader.pages))
         return ChunkedDocument(
-            hashlib.sha256(data).hexdigest(), CHUNKING_VERSION, chunks
+            hashlib.sha256(data).hexdigest(), PDF_CHUNKING_VERSION, chunks
         )

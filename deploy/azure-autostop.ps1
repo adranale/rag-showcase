@@ -27,7 +27,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')][string]$SubscriptionId,
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]{3,10}$')][string]$Suffix,
     [ValidatePattern('^[A-Za-z0-9._()-]{1,90}$')][string]$ResourceGroup = 'rg-rag-showcase',
-    # Must be an image built from a commit that contains app/wake.py and idle_stop.py.
+    # Must be an image built from a commit that contains app/wake.py and ops/idle_stop.py.
     [string]$Image = '',
     [ValidateRange(10, 1440)][int]$IdleMinutes = 30,
     # UTC. Every 10 minutes means the server stops 30-40 minutes after the last request.
@@ -114,14 +114,16 @@ try { Invoke-Az 'check idle-stop job' containerapp job show --resource-group $Re
 catch { $jobExists = $false }
 
 if ($jobExists) {
+    # The command is set again so existing jobs move to the current entry point.
     Invoke-Az 'update idle-stop job' containerapp job update --resource-group $ResourceGroup --name $jobName `
-        --image $Image --cron-expression $Schedule --replace-env-vars @envVars --output none | Out-Null
+        --image $Image --cron-expression $Schedule --command python --args ops/idle_stop.py `
+        --replace-env-vars @envVars --output none | Out-Null
 }
 else {
     Invoke-Az 'create idle-stop job' containerapp job create --resource-group $ResourceGroup --name $jobName `
         --environment $envId --trigger-type Schedule --cron-expression $Schedule `
         --replica-timeout 300 --replica-retry-limit 0 --replica-completion-count 1 --parallelism 1 `
-        --image $Image --cpu 0.25 --memory 0.5Gi --command python --args idle_stop.py `
+        --image $Image --cpu 0.25 --memory 0.5Gi --command python --args ops/idle_stop.py `
         --env-vars @envVars --mi-system-assigned --output none | Out-Null
 }
 $jobPrincipal = Assert-Value (Invoke-Az 'read job identity' containerapp job show --resource-group $ResourceGroup --name $jobName `

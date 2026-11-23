@@ -470,7 +470,7 @@ def test_init_db_makes_the_owner_admin(admin_url):
     env = {**os.environ, "ADMIN_DATABASE_URL": admin_url, "OWNER_EMAIL": email.upper()}
     env.pop("POSTGRES_RESOURCE_ID", None)
     for _ in range(2):  # idempotent
-        subprocess.run([sys.executable, "init_db.py"], cwd=root, env=env, check=True,
+        subprocess.run([sys.executable, "-m", "ops.init_db"], cwd=root, env=env, check=True,
                        capture_output=True)
     with psycopg.connect(admin_url) as conn:
         assert conn.execute(

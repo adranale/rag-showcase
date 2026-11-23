@@ -46,7 +46,7 @@ services:
 
   ui:
     image: rag-showcase:local
-    command: ["python", "ui_start.py"]
+    command: ["python", "ui/start.py"]
     environment:
       RAG_API_BASE_URL: http://api:8000
       USER_TOKEN_SECRET: ${USER_TOKEN_SECRET:?set USER_TOKEN_SECRET (32+ chars) in .env}

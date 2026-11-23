@@ -6,8 +6,8 @@ import httpx
 import psycopg
 import pytest
 
-import idle_stop
 from app import azure_arm, db, wake
+from ops import idle_stop
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "deploy" / "azure-autostop.ps1"
@@ -195,10 +195,12 @@ def test_autostop_script_requires_subscription():
 def test_autostop_script_never_echoes_arguments():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "if ($azArgs[0] -ne 'extension')" in text
-    assert "--args idle_stop.py" in text
+    assert text.count("--command python --args ops/idle_stop.py") == 2
     assert "Write-Host $azArgs" not in text
     assert 'throw "Azure CLI step failed: $label' in text
 
 
 def test_image_contains_idle_stop_entrypoint():
-    assert "idle_stop.py" in (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --chown=appuser:appuser ops/ ./ops/" in dockerfile
+    assert "PYTHONPATH=/app" in dockerfile

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from app.db import get_connection
 
-sql_dir = Path(__file__).resolve().parent / "sql"
+sql_dir = Path(__file__).resolve().parent.parent / "sql"
 
 # Migrations need the table owner; the app itself runs as the rag_runtime role.
 if os.getenv("ADMIN_DATABASE_URL"):

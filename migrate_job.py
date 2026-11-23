@@ -1,27 +1,9 @@
-"""Container Apps Job entrypoint: apply the schema and set up the runtime role.
+"""Compatibility entry point for deployed Azure commands (python migrate_job.py).
 
-Environment: ADMIN_DATABASE_URL (owner connection), RUNTIME_DB_PASSWORD, and
-optionally OWNER_EMAIL (assigns pre-v2 documents to that user). Both steps are
-idempotent, so the job can be re-run.
+The code lives in ops/migrate_job.py; remove this file once the Azure apps/jobs run the new path.
 """
 
-import os
-import subprocess
-import sys
-
-REQUIRED = ("ADMIN_DATABASE_URL", "RUNTIME_DB_PASSWORD")
-
-
-def main() -> None:
-    missing = [name for name in REQUIRED if not os.environ.get(name)]
-    if missing:
-        raise SystemExit("Missing environment variables: " + ", ".join(missing))
-    for script in ("init_db.py", "setup_runtime_role.py"):
-        print(f"== {script}", flush=True)
-        result = subprocess.run([sys.executable, script], check=False)
-        if result.returncode:
-            raise SystemExit(result.returncode)
-
+from ops.migrate_job import main
 
 if __name__ == "__main__":
     main()

@@ -2,11 +2,10 @@ from pgvector import Vector
 from pgvector.psycopg import register_vector
 from sentence_transformers import SentenceTransformer
 
+from app.config import EMBEDDING_DIMENSION, MODEL_NAME
 from app.db import get_connection
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 SLICE_SIZE = 1000
-EMBEDDING_DIMENSION = 384
 
 
 def main():

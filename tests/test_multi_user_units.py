@@ -8,7 +8,7 @@ from app import auth, crypto, quota, users
 from app.main import app
 from connectors.base import ConnectorError, RemoteFile
 from connectors.limits import LimitedConnector
-from ui_start import build_secrets
+from ui.start import build_secrets
 
 SECRET = "s" * 40
 

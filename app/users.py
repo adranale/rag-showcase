@@ -7,7 +7,7 @@ from app.db import get_connection
 # Tenant ID of personal Microsoft accounts (outlook.com, live.com, ...). For them
 # Microsoft verifies the e-mail address. In work/school tenants the e-mail claim is
 # set by the tenant admin and must not be trusted, so those users are invited with
-# their immutable tenant/object ID instead (manage_users.py invite --tid --oid).
+# their immutable tenant/object ID instead (python -m ops.manage_users invite --tid --oid).
 PERSONAL_TENANT_ID = "9188040d-6c67-4c5b-b112-36a304b66dad"
 
 _COLUMNS = "id, email, status, chats_per_day, files_per_sync, is_admin"
