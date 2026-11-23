@@ -22,7 +22,7 @@
 
     Run with -PreflightOnly first: it performs every check and creates nothing.
 
-    This is a prototype, not a hardened production setup (see README "Deploy to Azure").
+    This is a prototype, not a hardened production setup (see docs/deployment.md).
 
 .EXAMPLE
     pwsh ./deploy/azure.ps1 -SubscriptionId <guid> -Suffix abc123 -PreflightOnly
@@ -514,7 +514,7 @@ $uiFqdn = Assert-Value (Invoke-Az 'read UI FQDN' containerapp show `
 
 Write-Host ''
 Write-Host "UI:  https://$uiFqdn"
-Write-Host 'Next: load DATABASE_URL from .env.azure and run init_db.py, ingest_text.py, embed_chunks.py (README "Deploy to Azure").'
+Write-Host 'Next: load DATABASE_URL from .env.azure and run init_db.py, ingest_text.py, embed_chunks.py (docs/deployment.md, step 4).'
 Write-Host "When ingestion is done, remove the local firewall rule:"
 Write-Host "  az postgres flexible-server firewall-rule delete --resource-group $ResourceGroup --name $pgServer --rule-name allow-my-ip --subscription $SubscriptionId --yes"
 Write-Host 'Budgets only send alerts; they do not stop spending. Create one in Cost Management.'

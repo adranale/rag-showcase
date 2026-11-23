@@ -34,7 +34,7 @@
 
     Not production-hardened: Container Apps secrets are readable by anyone with Contributor
     access to the resource group, and the admin connection string stays in the rag-api
-    secrets (the app code does not use it). See README "Multi-user mode (v2)".
+    secrets (the app code does not use it). See docs/multi-user.md and docs/deployment.md.
 
 .EXAMPLE
     pwsh ./deploy/azure-multiuser.ps1 -SubscriptionId <guid> -Suffix abc123 -Image ghcr.io/adranale/rag-showcase:<commit-sha> -PreflightOnly
@@ -149,7 +149,7 @@ foreach ($name in 'MS_CLIENT_SECRET', 'DROPBOX_APP_SECRET', 'DOCINTEL_KEY') {
 }
 $msTenant = if (Get-EnvValue 'MS_TENANT') { Get-EnvValue 'MS_TENANT' } else { 'consumers' }
 if ($msTenant -ne 'consumers') {
-    Write-Warning "MS_TENANT='$msTenant': Streamlit login fails with invalid_claim: iss for common/organizations (see README). Use 'consumers' unless you verified a fix."
+    Write-Warning "MS_TENANT='$msTenant': Streamlit login fails with invalid_claim: iss for common/organizations (see docs/multi-user.md). Use 'consumers' unless you verified a fix."
 }
 $ownerEmail = Get-EnvValue 'OWNER_EMAIL'
 if ($ownerEmail -and $ownerEmail -notmatch '^[^@\s]+@[^@\s]+\.[^@\s]+$') { throw 'OWNER_EMAIL is not a valid e-mail address.' }
@@ -234,7 +234,7 @@ Write-Host "  OCR for worker:  $(if ($docIntel) { 'enabled' } else { 'disabled' 
 Write-Host "  E-mail to admins: $(if ($EmailNotifications) { "enabled ($communicationName / $emailServiceName, Azure-managed domain, data in Europe; charged per e-mail)" } else { 'not configured by this run' })"
 Write-Host ''
 Write-Host 'Manual checks: Entra app redirect URI, Dropbox app redirect URI (the UI root) and scopes,'
-Write-Host '  Dropbox development-mode user limit. See README "Multi-user mode (v2)".'
+Write-Host '  Dropbox development-mode user limit. See docs/multi-user.md "Limitations".'
 if ($PreflightOnly) { Write-Host 'Preflight passed. Nothing was changed.' -ForegroundColor Green; return }
 if (-not $AssumeYes) {
     $answer = Read-Host "Apply to subscription '$($sub.name)' ($($sub.id))? Type yes to continue"
