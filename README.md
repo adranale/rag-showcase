@@ -60,12 +60,14 @@ flowchart LR
 | Path | Content |
 |---|---|
 | `app/` | FastAPI app: routes (`main.py`), search, generation, users, access requests, Dropbox OAuth, sync jobs |
-| `chat_ui.py`, `ui_helpers.py`, `ui_start.py` | Streamlit UI |
+| `ui/` | Streamlit UI (`chat.py`), testable helpers, start script with the login config |
 | `connectors/` | Dropbox / Google Drive sources, text extraction, OCR, chunking, change tracking |
-| `sync_worker.py`, `embed_chunks.py` | Per-user sync and embedding |
-| `sql/` | Database schema and migrations (applied by `init_db.py`) |
+| `ingestion/` | Per-user sync worker, embedding, sample-data loader |
+| `ops/` | Operator tools: schema migration, runtime role, user management, idle auto-stop |
+| `sql/` | Database schema and migrations (applied by `ops/init_db.py`) |
 | `deploy/`, `.github/workflows/` | Azure deployment scripts and CI/CD |
-| `tests/`, `evaluation/` | Tests and retrieval evaluation |
+| `tests/` | pytest suite |
+| `*.py` in the root | Old entry points kept for existing Azure apps/jobs (to be removed) |
 
 ## Run locally
 
@@ -75,7 +77,7 @@ Needs Python 3.12, Docker and, for answers, [Ollama](https://ollama.com) with `l
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
 docker compose up -d db                  # PostgreSQL + pgvector on localhost:5432
-python init_db.py; python ingest_text.py; python embed_chunks.py   # sample data
+python -m ops.init_db; python -m ingestion.sample_data; python -m ingestion.embed   # sample data
 uvicorn app.main:app --reload            # API docs: http://127.0.0.1:8000/docs
 pytest                                   # some tests need the database
 ```

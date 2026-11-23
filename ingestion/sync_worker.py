@@ -62,7 +62,7 @@ def run_job(job: dict, load_model) -> bool:
 
 
 def _embed(conn, load_model) -> int:
-    from embed_chunks import embed_pending
+    from ingestion.embed import embed_pending
 
     return embed_pending(conn, load_model())
 
@@ -75,7 +75,7 @@ def main() -> int:
         if model is None:
             from sentence_transformers import SentenceTransformer
 
-            from app.search import MODEL_NAME
+            from app.config import MODEL_NAME
 
             model = SentenceTransformer(MODEL_NAME, device="cpu")
         return model

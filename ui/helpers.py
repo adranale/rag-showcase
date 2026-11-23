@@ -1,4 +1,4 @@
-"""Streamlit-free helpers of chat_ui.py (importable and unit-testable)."""
+"""Streamlit-free helpers of ui/chat.py (importable and unit-testable)."""
 
 import re
 import time

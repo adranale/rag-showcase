@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from ui_helpers import (
+from ui.helpers import (
     describe_location,
     extract_invite_code,
     group_citations,

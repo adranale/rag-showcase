@@ -1,13 +1,13 @@
 """Owner tool: manage the invitation list (uses the admin connection).
 
-    python manage_users.py list
-    python manage_users.py invite friend@outlook.com            # personal Microsoft account
-    python manage_users.py invite colleague@corp.com --tid <tenant-id> --oid <object-id>
-    python manage_users.py disable friend@outlook.com
-    python manage_users.py enable friend@outlook.com
-    python manage_users.py quota friend@outlook.com --chats-per-day 50 --files-per-sync 500
-    python manage_users.py admin friend@outlook.com              # may approve requests
-    python manage_users.py unadmin friend@outlook.com
+    python -m ops.manage_users list
+    python -m ops.manage_users invite friend@outlook.com            # personal Microsoft account
+    python -m ops.manage_users invite colleague@corp.com --tid <tenant-id> --oid <object-id>
+    python -m ops.manage_users disable friend@outlook.com
+    python -m ops.manage_users enable friend@outlook.com
+    python -m ops.manage_users quota friend@outlook.com --chats-per-day 50 --files-per-sync 500
+    python -m ops.manage_users admin friend@outlook.com              # may approve requests
+    python -m ops.manage_users unadmin friend@outlook.com
 
 Most users join through the invite link instead (admin page of the UI); this tool
 is the fallback when no admin can sign in.

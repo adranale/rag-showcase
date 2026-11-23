@@ -76,9 +76,9 @@ jobs:
           Write-Output "::add-mask::$url"
           $env:DATABASE_URL = $url
           python -m pip install -r requirements.txt
-          python init_db.py
-          python ingest_text.py
-          python embed_chunks.py
+          python -m ops.init_db
+          python -m ingestion.sample_data
+          python -m ingestion.embed
 
       - name: Remove firewall rule
         if: ${{ always() }}

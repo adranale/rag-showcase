@@ -6,13 +6,13 @@
     Run AFTER deploy/azure.ps1 (infrastructure, rag-api, rag-ui exist). In ONE explicitly
     chosen subscription it:
       1. creates the manual Container Apps Jobs rag-migrate (schema + runtime role),
-         rag-sync (per-user Dropbox sync worker) and rag-admin (manage_users.py);
+         rag-sync (per-user Dropbox sync worker) and rag-admin (ops/manage_users.py);
       2. optionally runs the migration (-RunMigration): applies sql/*.sql with the admin
          connection, sets the rag_runtime password and, with OWNER_EMAIL, assigns the
          existing documents to that user;
       3. reconfigures rag-api (connects as rag_runtime, user-token secret, Dropbox app,
          token encryption key, worker job id, system identity + 'Container Apps Jobs
-         Operator' on rag-sync) and rag-ui (Microsoft login through `python ui_start.py`,
+         Operator' on rag-sync) and rag-ui (Microsoft login through `python ui/start.py`,
          APP_PASSWORD removed);
       4. with -EmailNotifications: creates/reuses Azure Communication Services
          (acs-rag-<suffix>) with an Azure-managed e-mail domain (acs-email-<suffix>) and
@@ -279,10 +279,10 @@ function Set-Job([string]$Name, [string[]]$Command, [string[]]$Secrets, [string[
 
 $migrateEnv = @('ADMIN_DATABASE_URL=secretref:db-url', 'RUNTIME_DB_PASSWORD=secretref:runtime-db-password')
 if ($ownerEmail) { $migrateEnv += "OWNER_EMAIL=$ownerEmail" }
-Set-Job 'rag-migrate' @('python', 'migrate_job.py') @("db-url=$adminUrl", "runtime-db-password=$($generated['RUNTIME_DB_PASSWORD'])") $migrateEnv '1Gi'
+Set-Job 'rag-migrate' @('python', 'ops/migrate_job.py') @("db-url=$adminUrl", "runtime-db-password=$($generated['RUNTIME_DB_PASSWORD'])") $migrateEnv '1Gi'
 
-# User administration: start with e.g. --command python --args manage_users.py invite <email>
-Set-Job 'rag-admin' @('python', 'manage_users.py', 'list') @("db-url=$adminUrl") @('DATABASE_URL=secretref:db-url') '1Gi'
+# User administration: start with e.g. --command python --args ops/manage_users.py invite <email>
+Set-Job 'rag-admin' @('python', 'ops/manage_users.py', 'list') @("db-url=$adminUrl") @('DATABASE_URL=secretref:db-url') '1Gi'
 
 $workerSecrets = @("db-runtime-url=$runtimeUrl", "token-encryption-key=$($generated['TOKEN_ENCRYPTION_KEY'])", "dropbox-app-secret=$(Get-EnvValue 'DROPBOX_APP_SECRET')")
 $workerEnv = @('DATABASE_URL=secretref:db-runtime-url', 'TOKEN_ENCRYPTION_KEY=secretref:token-encryption-key',
@@ -292,7 +292,7 @@ if ($docIntel) {
     $workerEnv += "DOCINTEL_ENDPOINT=$(Get-EnvValue 'DOCINTEL_ENDPOINT')", 'DOCINTEL_KEY=secretref:docintel-key'
     if ($maxPages) { $workerEnv += "DOCINTEL_MAX_PAGES=$maxPages" }
 }
-Set-Job 'rag-sync' @('python', 'sync_worker.py') $workerSecrets $workerEnv
+Set-Job 'rag-sync' @('python', 'ingestion/sync_worker.py') $workerSecrets $workerEnv
 $syncJobId = Assert-Value (Invoke-Az 'read rag-sync resource id' containerapp job show --resource-group $ResourceGroup --name rag-sync --query id --output tsv) 'rag-sync id' '^/subscriptions/'
 
 # --- Migration -----------------------------------------------------------------
@@ -407,12 +407,12 @@ Write-Host 'Configuring rag-ui...'
 Invoke-Az 'set rag-ui secrets' containerapp secret set --resource-group $ResourceGroup --name rag-ui --secrets `
     "user-token-secret=$($generated['USER_TOKEN_SECRET'])" "auth-cookie-secret=$($generated['AUTH_COOKIE_SECRET'])" `
     "ms-client-secret=$(Get-EnvValue 'MS_CLIENT_SECRET')" --output none | Out-Null
-# `--args ui_start.py` does not start with "-", so az parses it reliably.
+# `--args ui/start.py` does not start with "-", so az parses it reliably.
 $uiEnvNames = @((Invoke-Az 'read UI env names' containerapp show --resource-group $ResourceGroup --name rag-ui `
             --query 'properties.template.containers[0].env[].name' --output tsv) -split "`n")
 $removeEnv = if ('APP_PASSWORD' -in $uiEnvNames) { @('--remove-env-vars', 'APP_PASSWORD') } else { @() }
 Invoke-Az 'update rag-ui' containerapp update --resource-group $ResourceGroup --name rag-ui --image $Image `
-    --command python --args ui_start.py `
+    --command python --args ui/start.py `
     --set-env-vars USER_TOKEN_SECRET=secretref:user-token-secret AUTH_COOKIE_SECRET=secretref:auth-cookie-secret `
     MS_CLIENT_SECRET=secretref:ms-client-secret "MS_CLIENT_ID=$(Get-EnvValue 'MS_CLIENT_ID')" "MS_TENANT=$msTenant" `
     "AUTH_REDIRECT_URI=https://$uiFqdn/oauth2callback" `
@@ -424,10 +424,10 @@ if (Get-AppSecret 'rag-ui' 'app-password') {
 Write-Host ''
 Write-Host "Done. UI: https://$uiFqdn"
 Write-Host 'Next: invite users with the invite link on the Admin page of the UI (admins: OWNER_EMAIL,'
-Write-Host '  or manage_users.py admin <email>). Without an admin, use the rag-admin job, e.g.'
-Write-Host "  az containerapp job start --resource-group $ResourceGroup --name rag-admin --subscription $SubscriptionId --command python --args manage_users.py invite friend@outlook.com"
+Write-Host '  or python -m ops.manage_users admin <email>). Without an admin, use the rag-admin job, e.g.'
+Write-Host "  az containerapp job start --resource-group $ResourceGroup --name rag-admin --subscription $SubscriptionId --command python --args ops/manage_users.py invite friend@outlook.com"
 Write-Host '  (add --tid/--oid for work accounts; output is in Log Analytics ContainerAppConsoleLogs_CL).'
-Write-Host 'The legacy rag-ingest job / ingest workflows write unowned documents that no user can see: do not use them in v2.'
+Write-Host 'The sample-data workflows write unowned documents that no user can see: do not use them in v2.'
 Write-Host 'Delete the rag-admin and rag-migrate jobs when not needed; they hold the admin connection string.'
 # A "secret not found" lookup leaves a non-zero native exit code; every real failure already threw.
 $global:LASTEXITCODE = 0

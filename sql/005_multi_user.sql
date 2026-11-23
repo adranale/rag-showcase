@@ -3,7 +3,7 @@
 --
 -- The role that applies the migrations (the table owner / DB admin) is NOT subject
 -- to the policies. The API and the sync worker must connect as `rag_runtime`
--- (see setup_runtime_role.py) so that the isolation is enforced by the database.
+-- (see ops/setup_runtime_role.py) so that the isolation is enforced by the database.
 
 DO $$
 BEGIN
@@ -32,7 +32,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_identity_key
     ON users (entra_tid, entra_oid) WHERE entra_oid IS NOT NULL;
 
 -- Ownership columns. Nullable so that data created before this migration can be
--- assigned to the owner by init_db.py (OWNER_EMAIL); documents and chunks inherit
+-- assigned to the owner by ops/init_db.py (OWNER_EMAIL); documents and chunks inherit
 -- the owner of their parent through the triggers below.
 ALTER TABLE source_connections
     ADD COLUMN IF NOT EXISTS user_id BIGINT REFERENCES users(id) ON DELETE CASCADE;

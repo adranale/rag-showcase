@@ -4,9 +4,8 @@ from pgvector import Vector
 from pgvector.psycopg import register_vector
 from sentence_transformers import SentenceTransformer
 
+from app.config import MODEL_NAME
 from app.db import get_connection
-
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 RRF_K = 60
 CANDIDATES_MIN = 25

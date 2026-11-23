@@ -18,11 +18,12 @@ import sys
 from pathlib import Path
 
 REQUIRED = ("AUTH_REDIRECT_URI", "AUTH_COOKIE_SECRET", "MS_CLIENT_ID", "MS_CLIENT_SECRET")
+ROOT = Path(__file__).resolve().parent.parent
 STREAMLIT_ARGS = [
     "-m",
     "streamlit",
     "run",
-    "chat_ui.py",
+    str(ROOT / "ui" / "chat.py"),
     "--server.address=0.0.0.0",
     "--server.port=8501",
     "--server.headless=true",
@@ -59,6 +60,10 @@ def main() -> None:
     secrets_file.parent.mkdir(parents=True, exist_ok=True)
     secrets_file.write_text(build_secrets(dict(os.environ)), encoding="utf-8")
     secrets_file.chmod(0o600)
+    # ui/chat.py imports the `app` and `ui` packages from the repository root.
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(ROOT), os.environ.get("PYTHONPATH")])
+    )
     os.execv(sys.executable, [sys.executable, *STREAMLIT_ARGS])
 
 

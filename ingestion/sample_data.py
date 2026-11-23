@@ -1,21 +1,22 @@
+"""Load the TXT/Markdown sample documents from data/sample (local development).
+
+    python -m ops.init_db
+    python -m ingestion.sample_data
+    python -m ingestion.embed
+
+The documents have no owner; `OWNER_EMAIL` with ops.init_db assigns them to that user.
+"""
+
 import hashlib
-import re
 from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
 from app.db import get_connection
+from connectors.chunking import split_paragraphs
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_FOLDER = PROJECT_ROOT / "data" / "sample"
-
-
-def split_paragraphs(text: str) -> list[str]:
-    return [
-        paragraph.strip()
-        for paragraph in re.split(r"\n\s*\n", text)
-        if paragraph.strip()
-    ]
 
 
 def ingest_file(path: Path):
@@ -40,7 +41,7 @@ def ingest_file(path: Path):
         ).fetchone()
 
         if source is None:
-            raise RuntimeError("Local source missing. Run init_db.py first.")
+            raise RuntimeError("Local source missing. Run python -m ops.init_db first.")
 
         connection_id = source[0]
 

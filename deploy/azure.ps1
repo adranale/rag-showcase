@@ -490,12 +490,12 @@ else {
 Write-Host 'Creating UI app (public, scale to zero)...'
 # az parses a space-separated value starting with "-" as an option, and a
 # comma-joined value is passed as ONE argument, so the Streamlit flags are set via
-# STREAMLIT_* environment variables instead. Command: streamlit run chat_ui.py
+# STREAMLIT_* environment variables instead. Command: streamlit run ui/chat.py
 Invoke-Az 'create UI container app' containerapp create `
     --resource-group $ResourceGroup --environment $envName --name rag-ui `
     --image $Image --ingress external --target-port 8501 `
     --cpu 0.5 --memory 1Gi --min-replicas 0 --max-replicas 1 `
-    --command streamlit --args run chat_ui.py `
+    --command streamlit --args run ui/chat.py `
     --secrets "api-key=$apiKey" "app-password=$appPassword" `
     --env-vars `
     "RAG_API_BASE_URL=https://$apiFqdn" `
@@ -514,7 +514,7 @@ $uiFqdn = Assert-Value (Invoke-Az 'read UI FQDN' containerapp show `
 
 Write-Host ''
 Write-Host "UI:  https://$uiFqdn"
-Write-Host 'Next: load DATABASE_URL from .env.azure and run init_db.py, ingest_text.py, embed_chunks.py (docs/deployment.md, step 4).'
+Write-Host 'Next: load DATABASE_URL from .env.azure and run python -m ops.init_db, python -m ingestion.sample_data, python -m ingestion.embed (docs/deployment.md, step 4).'
 Write-Host "When ingestion is done, remove the local firewall rule:"
 Write-Host "  az postgres flexible-server firewall-rule delete --resource-group $ResourceGroup --name $pgServer --rule-name allow-my-ip --subscription $SubscriptionId --yes"
 Write-Host 'Budgets only send alerts; they do not stop spending. Create one in Cost Management.'

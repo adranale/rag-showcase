@@ -8,7 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from app.auth import AuthError, issue_user_token
-from ui_helpers import (
+from ui.helpers import (
     INVITE_COOKIE,
     SUBMIT_MESSAGES,
     describe_location,
@@ -33,9 +33,9 @@ st.set_page_config(
 )
 
 if not hasattr(st.user, "is_logged_in"):
-    # Streamlit only provides login state when [auth] is configured (ui_start.py writes it).
+    # Streamlit only provides login state when [auth] is configured (ui/start.py writes it).
     logging.getLogger(__name__).error(
-        "Login is not configured: start the UI with ui_start.py and set "
+        "Login is not configured: start the UI with python -m ui.start and set "
         "AUTH_REDIRECT_URI, AUTH_COOKIE_SECRET, MS_CLIENT_ID and MS_CLIENT_SECRET."
     )
     st.error("Sign-in is temporarily unavailable. Please contact the administrator.")
