@@ -3,7 +3,7 @@ annotated-doc==0.0.7
 annotated-types==0.8.0
 anyio==4.16.0
 attrs==26.1.0
-Authlib==1.9.9
+Authlib==1.9.10
 certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -13,7 +13,7 @@ cryptography==50.0.2
 dnspython==2.9.2
 email-validator==2.4.0
 et_xmlfile==2.0.0
-fastapi==0.164.0
+fastapi==0.165.0
 httpcore==1.0.9
 httpx==0.28.1
 huggingface_hub==2.4.0
@@ -61,10 +61,10 @@ pyarrow==25.0.1
 pyasn1==0.6.5
 pyasn1_modules==0.4.2
 pycparser==3.12
-pydantic==2.14.3
+pydantic==2.14.4
 pydantic-extra-types==2.11.1
 pydantic-settings==2.16.3
-pydantic_core==2.50.4
+pydantic_core==2.50.5
 pydeck==0.9.3
 Pygments==2.21.0
 pypdf==7.1.1
@@ -75,7 +75,7 @@ python-multipart==0.0.34
 python-pptx==1.0.2
 PyYAML==6.0.3
 referencing==0.37.0
-regex==2026.11.18
+regex==2026.11.19
 requests==2.34.2
 rich==15.0.0
 rich-toolkit==0.20.6
