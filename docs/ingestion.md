@@ -36,7 +36,7 @@ python -m ingestion.sample_data   # TXT/Markdown from data/sample/
 python -m ingestion.embed         # embeds new or changed chunks (downloads the model on first run)
 ```
 
-The sample documents have no owner, so no signed-in user sees them; set `OWNER_EMAIL` when running `ops.init_db` to assign them (and any other unowned data) to that user. The workflows **Deploy to Azure** and **Ingest sample data (Azure)** run the same three steps against Azure.
+The sample documents have no owner, so no signed-in user sees them; set `OWNER_EMAIL` when running `ops.init_db` to assign them (and any other unowned data) to that user.
 
 ## Google Drive connector
 

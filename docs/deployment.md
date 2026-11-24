@@ -57,10 +57,10 @@ flowchart LR
 ### Processes
 - **Image build and deploy** (`build-and-deploy-image.yml`): builds `linux/amd64` on pushes to `main` / `azure-deployment` that touch the app, `Dockerfile`, `requirements.txt` or the workflow, and pushes `ghcr.io/adranale/rag-showcase:<full-commit-sha>`. Deployments use the immutable SHA tag; `latest` only comes from `main`.
 - **Preflight** (`deploy/azure.ps1 -PreflightOnly`): creates nothing. Checks tools, the explicitly given subscription, region, PostgreSQL restriction, names, image pullability and platform, and OpenAI model/SKU quota. `-ProbePostgres` proves PostgreSQL can really be created by creating and deleting a throwaway server.
-- **Provisioning** (`deploy/azure.ps1`, or the `Deploy to Azure` workflow): resource group → PostgreSQL + `VECTOR` extension + database + firewall → Azure OpenAI account and deployment → Container Apps environment → API app (internal) → UI app (public). Generated secrets are saved to `.env.azure` first, never printed, and stored as Container Apps secrets. Every `az` call goes through a helper that adds `--subscription`, uses a safe operation label and redacts secrets in errors.
-- **Ingestion**: `ops.init_db` → `ingestion.sample_data` → `ingestion.embed` against the database, either from your machine (needs outbound port 5432) or with the `Ingest sample data (Azure)` workflow, which opens a temporary firewall rule for the runner and always removes it.
+- **Provisioning** (`deploy/azure.ps1`, run locally by a subscription owner): resource group → PostgreSQL + `VECTOR` extension + database + firewall → Azure OpenAI account and deployment → Container Apps environment → API app (internal) → UI app (public). Generated secrets are saved to `.env.azure` first, never printed, and stored as Container Apps secrets. Every `az` call goes through a helper that adds `--subscription`, uses a safe operation label and redacts secrets in errors.
+- **Ingestion**: `ops.init_db` → `ingestion.sample_data` → `ingestion.embed` against the database from your machine (needs outbound port 5432 and the `allow-my-ip` firewall rule). The documents have no owner, so v2 users only see them after `ops.init_db` assigns them to `OWNER_EMAIL`.
 - **Authentication to Azure from CI**: OIDC federated credential bound to the `azure-test` GitHub environment, which requires a reviewer's approval for every run. No Azure password is stored in GitHub.
-- **Teardown**: manual only (see Cleanup).
+- **Teardown**: manual only, from your machine (see Cleanup).
 - **Idle auto-stop** (optional, `deploy/azure-autostop.ps1`): a scheduled job stops PostgreSQL after 30 idle minutes; the API starts it again on demand (managed identities, Contributor on the server only).
 
 ### Lessons from the first deployments
@@ -130,10 +130,8 @@ az postgres flexible-server firewall-rule delete --resource-group rg-rag-showcas
   ```
   (`/ready` shows `vector_extension` only after `ops.init_db` ran.)
 
-### Deploy from GitHub Actions (alternative to steps 2–4)
-The `Deploy to Azure` workflow (manual *Run workflow*) runs the same script, then initialises the DB and ingests the sample data, then removes the CI firewall rule. It signs in with OIDC (no stored Azure password). `preflight_only` is on by default; untick it to create resources. `probe_postgres` (preflight only) runs the `-ProbePostgres` check.
-
-If provisioning succeeded but the ingestion step did not run or failed (for example a transient Azure error), do not re-provision: run the manual `Ingest sample data (Azure)` workflow with the same `suffix`. It reads the connection string from the `rag-api` app's `db-url` secret, opens a temporary firewall rule for the runner, runs `ops.init_db`, `ingestion.sample_data` and `ingestion.embed`, and always removes the rule again. This also works when port 5432 is blocked on your own network.
+### GitHub Actions setup (OIDC)
+Two workflows act on Azure from GitHub: **Build and deploy image** (rolls out every merge to `main`) and **Azure multi-user setup** (runs `deploy/azure-multiuser.ps1`). Provisioning, auto-stop and teardown are run locally: they need rights the CI identity does not have (provider registration, role assignments) or are destructive. The workflows sign in with OIDC (no stored Azure password).
 
 One-time setup:
 ```powershell
@@ -151,9 +149,10 @@ In GitHub: Settings → Environments → create `azure-test` (add yourself as re
 | `AZURE_CLIENT_ID` | app registration (client) ID from above |
 | `AZURE_TENANT_ID` | Azure tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | the NGO subscription ID |
-| `RAG_UI_PASSWORD` | UI login password (8–64 chars: letters, digits, `. _ ~ + @ #` or `-`); v1 only — v2 uses Microsoft sign-in and the secret was removed from the deployment environment |
 
-The credentials generated in CI are discarded with the runner. Retrieve them later from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`). The workflow runs the same script, so it is resumable too: after a failed run, run it again with the same `suffix` and it continues with what is missing, taking the credentials from the existing `rag-api` secrets. Deleting the resource group is only needed to start from scratch. To delete it from GitHub, run the **Destroy Azure deployment** workflow (same `azure-test` environment/approval; you must retype the resource group name to confirm).
+and the variable `AZURE_SUFFIX` (deployment suffix used by **Build and deploy image**). The v2 secrets for **Azure multi-user setup** are listed in [Upgrade to multi-user mode](#upgrade-to-multi-user-mode-v2).
+
+If `.env.azure` is lost, the credentials can be read from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`).
 
 ### Idle auto-stop and on-demand start (optional, saves the PostgreSQL cost)
 Container Apps already scale to zero and start with the first request. PostgreSQL does not (it is the main cost, billed per hour while running). `deploy/azure-autostop.ps1` adds, to an existing deployment:
@@ -165,7 +164,7 @@ pwsh ./deploy/azure-autostop.ps1 -SubscriptionId <subscription-id> -Suffix <suff
 ```
 The image must be built from a commit that contains `app/wake.py` and `ops/idle_stop.py` (the `Build and deploy image` workflow does this for `azure-deployment`). The script is safe to re-run. It restarts `rag-api` with that image, enables system-assigned managed identities (no stored credentials) and grants them **Contributor on the PostgreSQL server only** (start/stop) plus **Monitoring Reader on `rag-api`** (job). Creating role assignments needs *Owner*, *User Access Administrator* or *Role Based Access Control Administrator*; the CI identity has only *Contributor*, so run this script yourself with `az login` (or grant that role to the CI identity first). Role assignments can take a few minutes to apply.
 
-Notes: the job does not know about direct database use. After a manual start (for example ingestion from your machine) the server is stopped 30–40 minutes later unless the API receives requests; the `Ingest sample data (Azure)` workflow does not start a stopped server either, so start it first (`az postgres flexible-server start --name pg-rag-<suffix> --resource-group rg-rag-showcase --subscription <subscription-id>`). A stopped server still bills for its storage. To remove the feature: `az containerapp job delete --name rag-idle-stop --resource-group rg-rag-showcase --subscription <subscription-id>` and remove `POSTGRES_RESOURCE_ID` from `rag-api`. Verified on the test deployment: the job stopped the server after 30 idle minutes, the next question returned the "database is starting" message, and a retry a few minutes later gave a cited answer.
+Notes: the job does not know about direct database use. After a manual start (for example ingestion from your machine) the server is stopped 30–40 minutes later unless the API receives requests; start a stopped server before working on the database directly (`az postgres flexible-server start --name pg-rag-<suffix> --resource-group rg-rag-showcase --subscription <subscription-id>`). A stopped server still bills for its storage. To remove the feature: `az containerapp job delete --name rag-idle-stop --resource-group rg-rag-showcase --subscription <subscription-id>` and remove `POSTGRES_RESOURCE_ID` from `rag-api`. Verified on the test deployment: the job stopped the server after 30 idle minutes, the next question returned the "database is starting" message, and a retry a few minutes later gave a cited answer.
 
 ## Upgrade to multi-user mode (v2)
 
