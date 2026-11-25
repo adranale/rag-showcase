@@ -214,7 +214,7 @@ def test_store_creates_user_owned_documents(admin_url, runtime):
 
 
 def test_document_chunks_and_status_are_scoped_to_the_owner(admin_url, runtime):
-    from app import documents, dropbox_oauth
+    from app import documents, storage
 
     a, b = make_user(admin_url), make_user(admin_url)
     add_document(admin_url, a, "alpha")
@@ -231,10 +231,10 @@ def test_document_chunks_and_status_are_scoped_to_the_owner(admin_url, runtime):
     assert documents.document_chunks(user_b, document_id) is None
 
     # Indexed data without stored credentials still shows up (pre-v2 import).
-    status = dropbox_oauth.status(user_a)
-    assert status["connected"] is False
+    status = storage.status(user_a)
+    assert status["connected"] is False and status["provider"] is None
     assert status["documents_indexed"] == 1 and status["chunks"] == 1
-    assert [s["folder"] for s in status["sources"]] == ["/alpha"]
+    assert [(s["provider"], s["folder"]) for s in status["sources"]] == [("dropbox", "/alpha")]
     assert status["sources"][0]["documents_indexed"] == 1
 
 
@@ -302,10 +302,10 @@ def test_job_queue(admin_url, runtime):
     assert created_next
 
 
-def test_dropbox_oauth_flow(admin_url, runtime, monkeypatch):
+def test_storage_oauth_flow(admin_url, runtime, monkeypatch):
     import httpx
 
-    from app import crypto, dropbox_oauth
+    from app import crypto, dropbox_oauth, storage
 
     monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", crypto.generate_key())
     monkeypatch.setenv("DROPBOX_APP_KEY", "key")
@@ -328,34 +328,157 @@ def test_dropbox_oauth_flow(admin_url, runtime, monkeypatch):
     owner = load_user(admin_url, make_user(admin_url))
     intruder = load_user(admin_url, make_user(admin_url))
 
-    url = dropbox_oauth.start_authorization(owner)
+    url = storage.start_authorization(owner, "dropbox")
     assert "code_challenge_method=S256" in url and "scope=files.metadata.read" in url
     state = url.split("state=")[1].split("&")[0]
 
-    with pytest.raises(dropbox_oauth.OAuthError):  # state belongs to another user
-        dropbox_oauth.complete_authorization(intruder, "code", state)
-    dropbox_oauth.complete_authorization(owner, "code", state)
-    with pytest.raises(dropbox_oauth.OAuthError):  # single use
-        dropbox_oauth.complete_authorization(owner, "code", state)
+    with pytest.raises(storage.OAuthError):  # state belongs to another user
+        storage.complete_authorization(intruder, "code", state)
+    assert storage.complete_authorization(owner, "code", state) == "dropbox"
+    with pytest.raises(storage.OAuthError):  # single use
+        storage.complete_authorization(owner, "code", state)
 
     with psycopg.connect(admin_url) as conn:
         stored = conn.execute(
-            "SELECT refresh_token_encrypted FROM dropbox_credentials WHERE user_id = %s;",
+            "SELECT refresh_token_encrypted FROM storage_credentials WHERE user_id = %s;",
             (owner.id,),
         ).fetchone()[0]
     assert b"REFRESH-SECRET" not in bytes(stored)
-    assert dropbox_oauth.load_credentials(owner.id) == ("REFRESH-SECRET", None)
-    assert dropbox_oauth.load_credentials(intruder.id) is None
+    assert storage.load_credentials(owner.id) == ("dropbox", "REFRESH-SECRET", None)
+    assert storage.load_credentials(intruder.id) is None
 
     revoked = []
+    monkeypatch.setattr(dropbox_oauth, "revoke", lambda token: revoked.append(token))
+    storage.disconnect(owner, delete_documents=False)
+    assert revoked == ["REFRESH-SECRET"] and storage.load_credentials(owner.id) is None
 
-    class FakeSource:
-        def revoke(self):
-            revoked.append(True)
 
-    monkeypatch.setattr(dropbox_oauth, "source_for", lambda *args: FakeSource())
-    dropbox_oauth.disconnect(owner, delete_documents=False)
-    assert revoked and dropbox_oauth.load_credentials(owner.id) is None
+def add_source_document(admin_url, user_id, provider, folder, title):
+    with psycopg.connect(admin_url) as conn:
+        connection_id = conn.execute(
+            """
+            INSERT INTO source_connections (user_id, provider, account_identifier)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id, provider, account_identifier)
+            DO UPDATE SET account_identifier = EXCLUDED.account_identifier
+            RETURNING id;
+            """,
+            (user_id, provider, folder),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO documents (connection_id, external_file_id, title, ingestion_status) "
+            "VALUES (%s, %s, %s, 'indexed');",
+            (connection_id, title, title),
+        )
+
+
+def titles(admin_url, user_id):
+    with psycopg.connect(admin_url) as conn:
+        rows = conn.execute(
+            "SELECT title FROM documents WHERE user_id = %s ORDER BY title;", (user_id,)
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def test_switching_provider_or_folder_deletes_only_after_confirmation(
+    admin_url, runtime, monkeypatch
+):
+    from app import crypto, dropbox_oauth, gdrive_oauth, storage
+
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", crypto.generate_key())
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://ui.example/")
+    user_id = make_user(admin_url)
+    user = load_user(admin_url, user_id)
+    other = make_user(admin_url)
+    with psycopg.connect(admin_url) as conn:
+        conn.execute(
+            "INSERT INTO storage_credentials (user_id, provider, refresh_token_encrypted, "
+            "folder, folder_name) VALUES (%s, 'dropbox', %s, '/alpha', '/alpha');",
+            (user_id, crypto.encrypt("DROPBOX-TOKEN")),
+        )
+    add_source_document(admin_url, user_id, "dropbox", "/alpha", "dropbox-doc")
+    add_source_document(admin_url, user_id, "local", "sample-folder", "sample-doc")
+    add_source_document(admin_url, other, "dropbox", "/alpha", "other-users-doc")
+
+    # Switching to Google Drive would delete the Dropbox documents: confirm first.
+    with pytest.raises(storage.ConfirmationRequired) as pending:
+        storage.start_authorization(user, "google_drive")
+    assert pending.value.documents == 1
+    url = storage.start_authorization(user, "google_drive", confirm_delete=True)
+    state = url.split("state=")[1].split("&")[0]
+    assert "accounts.google.com" in url
+
+    revoked = []
+    monkeypatch.setattr(dropbox_oauth, "revoke", lambda token: revoked.append(token))
+    monkeypatch.setattr(
+        gdrive_oauth, "exchange_code", lambda code, verifier: ("GOOGLE-TOKEN", "me@gmail.com")
+    )
+    assert storage.complete_authorization(user, "code", state) == "google_drive"
+    assert revoked == ["DROPBOX-TOKEN"]
+    assert storage.load_credentials(user_id) == ("google_drive", "GOOGLE-TOKEN", None)
+    # Local sample data and other users are never touched.
+    assert titles(admin_url, user_id) == ["sample-doc"]
+    assert titles(admin_url, other) == ["other-users-doc"]
+
+    # Changing the Drive folder deletes the documents of the previous folder.
+    folders = {"https://drive.google.com/drive/folders/NEW": ("NEW", "Notes")}
+    monkeypatch.setattr(
+        gdrive_oauth, "resolve_folder", lambda token, value: folders[value]
+    )
+    add_source_document(admin_url, user_id, "google_drive", "OLD", "old-drive-doc")
+    link = "https://drive.google.com/drive/folders/NEW"
+    with pytest.raises(storage.ConfirmationRequired):
+        storage.set_folder(user, link)
+    assert titles(admin_url, user_id) == ["old-drive-doc", "sample-doc"]
+    result = storage.set_folder(user, link, confirm_delete=True)
+    assert result == {"folder": "NEW", "folder_name": "Notes", "documents_deleted": 1}
+    assert titles(admin_url, user_id) == ["sample-doc"]
+
+    # Saving the same folder again needs no confirmation and keeps its documents.
+    add_source_document(admin_url, user_id, "google_drive", "NEW", "new-drive-doc")
+    assert storage.set_folder(user, link)["documents_deleted"] == 0
+    status = storage.status(user)
+    assert status["provider"] == "google_drive" and status["account"] == "me@gmail.com"
+    assert status["folder_name"] == "Notes"
+    assert [(s["provider"], s["folder"]) for s in status["sources"]] == [
+        ("google_drive", "Notes")
+    ]
+
+    # Reconnecting the same provider keeps the folder.
+    url = storage.start_authorization(user, "google_drive")
+    storage.complete_authorization(user, "code", url.split("state=")[1].split("&")[0])
+    assert storage.load_credentials(user_id).folder == "NEW"
+    assert titles(admin_url, user_id) == ["new-drive-doc", "sample-doc"]
+
+
+def test_storage_migration_moves_dropbox_credentials(admin_url, runtime):
+    from app.db import get_connection
+
+    a, b = make_user(admin_url), make_user(admin_url)
+    with psycopg.connect(admin_url) as conn:
+        conn.execute(
+            "INSERT INTO dropbox_credentials (user_id, refresh_token_encrypted, folder) "
+            "VALUES (%s, %s, '/legacy');",
+            (a, b"encrypted"),
+        )
+        migration = (SQL_DIR / "007_storage_providers.sql").read_text(encoding="utf-8")
+        conn.execute(migration)
+        conn.execute(migration)  # moved, not copied: a re-run changes nothing
+        assert conn.execute("SELECT count(*) FROM dropbox_credentials;").fetchone()[0] == 0
+        rows = conn.execute(
+            "SELECT user_id, provider, folder, folder_name FROM storage_credentials "
+            "WHERE user_id = %s;",
+            (a,),
+        ).fetchall()
+    assert rows == [(a, "dropbox", "/legacy", "/legacy")]
+
+    # Row-level security: another user cannot see the credentials.
+    with get_connection(b) as conn:
+        assert conn.execute("SELECT count(*) FROM storage_credentials;").fetchone()[0] == 0
+    with get_connection(a) as conn:
+        assert conn.execute("SELECT count(*) FROM storage_credentials;").fetchone()[0] == 1
 
 
 def make_admin(admin_url):

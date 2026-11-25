@@ -30,7 +30,9 @@
 
     Caller environment (never printed): MS_CLIENT_ID, MS_CLIENT_SECRET, DROPBOX_APP_KEY,
     DROPBOX_APP_SECRET; optional OWNER_EMAIL, MS_TENANT (default consumers),
-    DOCINTEL_ENDPOINT/DOCINTEL_KEY/DOCINTEL_MAX_PAGES (OCR for the worker).
+    DOCINTEL_ENDPOINT/DOCINTEL_KEY/DOCINTEL_MAX_PAGES (OCR for the worker),
+    GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET (enables Google Drive; register
+    https://<ui-fqdn>/ as redirect URI of the Google OAuth client).
 
     Not production-hardened: Container Apps secrets are readable by anyone with Contributor
     access to the resource group, and the admin connection string stays in the rag-api
@@ -144,7 +146,7 @@ $missing = @($required | Where-Object { -not (Get-EnvValue $_) })
 if ($missing) {
     throw "Missing environment variables: $($missing -join ', '). Set them in the calling environment (they are never printed)."
 }
-foreach ($name in 'MS_CLIENT_SECRET', 'DROPBOX_APP_SECRET', 'DOCINTEL_KEY') {
+foreach ($name in 'MS_CLIENT_SECRET', 'DROPBOX_APP_SECRET', 'DOCINTEL_KEY', 'GOOGLE_OAUTH_CLIENT_SECRET') {
     if (Get-EnvValue $name) { $script:SecretValues.Add([string](Get-EnvValue $name)) }
 }
 $msTenant = if (Get-EnvValue 'MS_TENANT') { Get-EnvValue 'MS_TENANT' } else { 'consumers' }
@@ -160,6 +162,9 @@ $docIntel = @('DOCINTEL_ENDPOINT', 'DOCINTEL_KEY') | Where-Object { Get-EnvValue
 if ($docIntel -and $docIntel.Count -ne 2) { throw 'Set both DOCINTEL_ENDPOINT and DOCINTEL_KEY, or neither.' }
 if ($docIntel -and (Get-EnvValue 'DOCINTEL_ENDPOINT') -notmatch '^https://') { throw 'DOCINTEL_ENDPOINT must be an https:// URL.' }
 $maxPages = Get-EnvValue 'DOCINTEL_MAX_PAGES'
+$google = @('GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET') | Where-Object { Get-EnvValue $_ }
+if ($google -and $google.Count -ne 2) { throw 'Set both GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET, or neither.' }
+if (-not $google) { Write-Host 'Google Drive: not configured (GOOGLE_OAUTH_CLIENT_ID/SECRET not set); users can only connect Dropbox.' }
 if ($maxPages -and $maxPages -notmatch '^\d+$') { throw 'DOCINTEL_MAX_PAGES must be a non-negative integer.' }
 if ($Image -match ':latest$') { Write-Warning "Image '$Image' is a moving tag. Prefer the commit SHA built by CI." }
 
@@ -292,6 +297,15 @@ if ($docIntel) {
     $workerEnv += "DOCINTEL_ENDPOINT=$(Get-EnvValue 'DOCINTEL_ENDPOINT')", 'DOCINTEL_KEY=secretref:docintel-key'
     if ($maxPages) { $workerEnv += "DOCINTEL_MAX_PAGES=$maxPages" }
 }
+$apiGoogleSecrets = @(); $apiGoogleEnv = @()
+if ($google) {
+    # The worker refreshes the users' Google tokens; the API runs the OAuth flow.
+    $workerSecrets += "google-client-secret=$(Get-EnvValue 'GOOGLE_OAUTH_CLIENT_SECRET')"
+    $workerEnv += "GOOGLE_OAUTH_CLIENT_ID=$(Get-EnvValue 'GOOGLE_OAUTH_CLIENT_ID')", 'GOOGLE_OAUTH_CLIENT_SECRET=secretref:google-client-secret'
+    $apiGoogleSecrets = @("google-client-secret=$(Get-EnvValue 'GOOGLE_OAUTH_CLIENT_SECRET')")
+    $apiGoogleEnv = @("GOOGLE_OAUTH_CLIENT_ID=$(Get-EnvValue 'GOOGLE_OAUTH_CLIENT_ID')", 'GOOGLE_OAUTH_CLIENT_SECRET=secretref:google-client-secret',
+        "GOOGLE_REDIRECT_URI=https://$uiFqdn/")
+}
 Set-Job 'rag-sync' @('python', 'ingestion/sync_worker.py') $workerSecrets $workerEnv
 $syncJobId = Assert-Value (Invoke-Az 'read rag-sync resource id' containerapp job show --resource-group $ResourceGroup --name rag-sync --query id --output tsv) 'rag-sync id' '^/subscriptions/'
 
@@ -382,12 +396,12 @@ $principalId = Assert-Value (Invoke-Az 'enable system identity on rag-api' conta
 Invoke-Az 'set rag-api secrets' containerapp secret set --resource-group $ResourceGroup --name rag-api --secrets `
     "db-runtime-url=$runtimeUrl" "user-token-secret=$($generated['USER_TOKEN_SECRET'])" `
     "token-encryption-key=$($generated['TOKEN_ENCRYPTION_KEY'])" "dropbox-app-secret=$(Get-EnvValue 'DROPBOX_APP_SECRET')" `
-    @apiEmailSecrets --output none | Out-Null
+    @apiEmailSecrets @apiGoogleSecrets --output none | Out-Null
 Invoke-Az 'update rag-api' containerapp update --resource-group $ResourceGroup --name rag-api --image $Image --set-env-vars `
     DATABASE_URL=secretref:db-runtime-url USER_TOKEN_SECRET=secretref:user-token-secret `
     TOKEN_ENCRYPTION_KEY=secretref:token-encryption-key DROPBOX_APP_SECRET=secretref:dropbox-app-secret `
     "DROPBOX_APP_KEY=$(Get-EnvValue 'DROPBOX_APP_KEY')" "DROPBOX_REDIRECT_URI=https://$uiFqdn/" `
-    "UI_BASE_URL=https://$uiFqdn/" "WORKER_JOB_RESOURCE_ID=$syncJobId" @apiEmailEnv --output none | Out-Null
+    "UI_BASE_URL=https://$uiFqdn/" "WORKER_JOB_RESOURCE_ID=$syncJobId" @apiEmailEnv @apiGoogleEnv --output none | Out-Null
 
 try {
     $hasRole = Invoke-Az 'check worker role assignment' role assignment list --assignee $principalId --scope $syncJobId `

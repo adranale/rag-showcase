@@ -173,6 +173,63 @@ def test_gdrive_rejects_folder_that_is_not_an_id():
         GoogleDriveSource("x' or '1'='1", lambda: "tok")
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1AbC_d-E", "1AbC_d-E"),
+        ("https://drive.google.com/drive/folders/1AbC_d-E?usp=sharing", "1AbC_d-E"),
+        ("https://drive.google.com/drive/u/1/folders/1AbC_d-E", "1AbC_d-E"),
+        ("https://drive.google.com/open?id=1AbC_d-E", "1AbC_d-E"),
+        ("https://evil.example/drive/folders/1AbC_d-E", None),
+        ("/Documents/notes", None),
+        ("", None),
+    ],
+)
+def test_gdrive_folder_link_parsing(value, expected):
+    from connectors.gdrive_source import parse_folder_id
+
+    assert parse_folder_id(value) == expected
+
+
+def test_gdrive_check_folder_returns_name_only_for_readable_folders():
+    items = {
+        "folder": {"mimeType": "application/vnd.google-apps.folder", "name": "Notes"},
+        "trashed": {"mimeType": "application/vnd.google-apps.folder", "trashed": True},
+        "file": {"mimeType": "text/plain", "name": "a.txt"},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        item_id = request.url.path.rsplit("/", 1)[1]
+        if item_id == "broken":
+            return httpx.Response(500)
+        if item_id not in items:
+            return httpx.Response(404)
+        return httpx.Response(200, json=items[item_id])
+
+    def check(folder):
+        return GoogleDriveSource(folder, lambda: "tok", make_client(handler)).check_folder()
+
+    assert check("folder") == "Notes"
+    assert check("trashed") is None and check("file") is None and check("missing") is None
+    with pytest.raises(ConnectorError):
+        check("broken")
+
+
+def test_gdrive_refreshes_an_expired_access_token():
+    tokens = iter(["old", "new"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            assert request.content and b"refresh_token=R" in request.content
+            return httpx.Response(200, json={"access_token": next(tokens)})
+        if request.headers["Authorization"] == "Bearer old":
+            return httpx.Response(401)
+        return httpx.Response(200, json={"files": []})
+
+    source = GoogleDriveSource.for_user("root1", "cid", "sec", "R", make_client(handler))
+    assert list(source.list_files()) == []
+
+
 def test_gdrive_from_env_requires_credentials(monkeypatch):
     for name in (
         "GOOGLE_SERVICE_ACCOUNT_JSON",

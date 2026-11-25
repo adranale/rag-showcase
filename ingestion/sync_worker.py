@@ -1,4 +1,5 @@
-"""Sync worker: processes queued per-user Dropbox syncs, then exits.
+"""Sync worker: processes queued per-user storage syncs (Dropbox or Google Drive),
+then exits.
 
 Runs as a Container Apps Job (started by the API on /sync, plus a safety schedule).
 It connects as the `rag_runtime` role and scopes every database access to the job's
@@ -8,9 +9,9 @@ names or content.
 
 import sys
 
-from app import crypto, jobs
+from app import crypto, jobs, storage
 from app.db import get_connection
-from app.dropbox_oauth import OAuthError, load_credentials, source_for
+from app.oauth import OAuthError
 from connectors.base import ConnectorError
 from connectors.chunking import PipelineChunker
 from connectors.limits import LimitedConnector
@@ -28,12 +29,11 @@ def run_job(job: dict, load_model) -> bool:
         if row is None or row[1] != "active":
             raise ConnectorError("This account is not enabled.")
 
-        credentials = load_credentials(user_id)
-        if credentials is None or credentials[1] is None:
-            raise ConnectorError("Connect Dropbox and choose a folder first.")
-        refresh_token, folder = credentials
+        credentials = storage.load_credentials(user_id)
+        if credentials is None or credentials.folder is None:
+            raise ConnectorError("Connect Dropbox or Google Drive and choose a folder first.")
 
-        connector = LimitedConnector(source_for(refresh_token, folder), row[0])
+        connector = LimitedConnector(storage.source_for(credentials), row[0])
         result = sync(connector, PostgresStore(user_id), PipelineChunker(), log_paths=False)
 
         embedded = 0

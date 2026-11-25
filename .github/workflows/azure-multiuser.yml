@@ -77,6 +77,8 @@ jobs:
           DOCINTEL_ENDPOINT: ${{ secrets.DOCINTEL_ENDPOINT }}
           DOCINTEL_KEY: ${{ secrets.DOCINTEL_KEY }}
           DOCINTEL_MAX_PAGES: ${{ vars.DOCINTEL_MAX_PAGES }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
         run: >
           ./deploy/azure-multiuser.ps1
           -SubscriptionId '${{ secrets.AZURE_SUBSCRIPTION_ID }}'
