@@ -28,6 +28,9 @@ services:
       DROPBOX_APP_KEY: ${DROPBOX_APP_KEY:-}
       DROPBOX_APP_SECRET: ${DROPBOX_APP_SECRET:-}
       DROPBOX_REDIRECT_URI: ${DROPBOX_REDIRECT_URI:-http://localhost:8501/}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:8501/}
     volumes:
       - huggingface_cache:/home/appuser/.cache/huggingface
     depends_on:

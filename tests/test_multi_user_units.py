@@ -127,7 +127,7 @@ def test_ui_secrets_are_valid_toml_and_default_to_consumers():
 
 
 def test_pkce_challenge_matches_rfc7636_example():
-    from app.dropbox_oauth import code_challenge
+    from app.oauth import code_challenge
 
     assert (
         code_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
@@ -144,13 +144,76 @@ def client():
 
 
 def test_me_endpoint(client, monkeypatch):
-    from app import dropbox_oauth, jobs
+    from app import jobs, storage
 
-    monkeypatch.setattr(dropbox_oauth, "status", lambda user: {"connected": False})
+    monkeypatch.setattr(storage, "status", lambda user: {"connected": False})
     monkeypatch.setattr(jobs, "latest", lambda user_id: None)
     response = client.get("/me")
     assert response.status_code == 200
     assert response.json()["email"] == "a@b.c"
+
+
+def test_storage_switch_needs_confirmation(client, monkeypatch):
+    from app import storage
+
+    calls = []
+
+    def start(user, provider, confirm):
+        calls.append((provider, confirm))
+        if not confirm:
+            raise storage.ConfirmationRequired(3)
+        return "https://accounts.google.com/o/oauth2/v2/auth?x=1"
+
+    monkeypatch.setattr(storage, "start_authorization", start)
+    response = client.post("/storage/google_drive/authorize")
+    assert response.status_code == 409 and "3 indexed documents" in response.json()["detail"]
+    response = client.post("/storage/google_drive/authorize", json={"confirm_delete": True})
+    assert response.status_code == 200 and response.json()["url"].startswith("https://")
+    assert calls == [("google_drive", False), ("google_drive", True)]
+    assert client.post("/storage/onedrive/authorize").status_code == 422
+
+
+def test_google_authorize_url_requests_offline_read_only_access(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from app import gdrive_oauth
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://ui.example/")
+    query = parse_qs(urlsplit(gdrive_oauth.authorize_url("st", "v" * 64)).query)
+    assert set(query["scope"][0].split()) == {
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/drive.readonly",
+    }
+    assert query["access_type"] == ["offline"] and query["prompt"] == ["consent"]
+    assert query["code_challenge_method"] == ["S256"] and query["state"] == ["st"]
+    assert query["redirect_uri"] == ["https://ui.example/"]
+    assert "client_secret" not in query
+
+
+def test_google_code_exchange_requires_drive_access(monkeypatch):
+    import base64
+    import json
+
+    import httpx
+
+    from app import gdrive_oauth
+    from app.oauth import OAuthError
+
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://ui.example/")
+    payload = base64.urlsafe_b64encode(json.dumps({"email": "me@gmail.com"}).encode())
+    id_token = "h." + payload.decode().rstrip("=") + ".sig"
+    body = {"refresh_token": "R", "id_token": id_token, "scope": "openid email"}
+    monkeypatch.setattr(httpx, "post", lambda url, **kwargs: httpx.Response(200, json=body))
+    with pytest.raises(OAuthError, match="did not grant read access"):
+        gdrive_oauth.exchange_code("code", "verifier")
+
+    body["scope"] += " https://www.googleapis.com/auth/drive.readonly"
+    assert gdrive_oauth.exchange_code("code", "verifier") == ("R", "me@gmail.com")
 
 
 def test_document_chunks_endpoint(client, monkeypatch):
@@ -180,7 +243,9 @@ def test_endpoints_reject_anonymous_calls():
         ("post", "/sync"),
         ("delete", "/me/documents"),
         ("get", "/documents/1/chunks"),
-        ("post", "/dropbox/authorize"),
+        ("post", "/storage/dropbox/authorize"),
+        ("put", "/storage/folder"),
+        ("delete", "/storage"),
         ("get", "/access-request"),
         ("get", "/admin/users"),
         ("post", "/admin/invite"),

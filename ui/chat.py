@@ -10,12 +10,14 @@ from dotenv import load_dotenv
 from app.auth import AuthError, issue_user_token
 from ui.helpers import (
     INVITE_COOKIE,
+    PROVIDERS,
     SUBMIT_MESSAGES,
     describe_location,
     extract_invite_code,
     group_citations,
     invite_cookie_script,
     invite_link,
+    provider_label,
     request_with_retry,
 )
 
@@ -207,20 +209,24 @@ def load_account(refresh: bool = False) -> dict:
 account = load_account()
 
 
-# Dropbox sends the browser back here after the user approved (or denied) access.
+# Dropbox / Google send the browser back here after the user approved (or denied)
+# access; the API knows the provider from the state.
 params = st.query_params
 if "state" in params and ("code" in params or "error" in params):
     if "code" in params:
-        _, problem = call(
+        data, problem = call(
             "POST",
-            "/dropbox/callback",
+            "/storage/callback",
             json={"code": params["code"], "state": params["state"]},
         )
         st.session_state.flash = (
-            ("error", problem) if problem else ("success", "Dropbox connected.")
+            ("error", problem)
+            if problem
+            else ("success", f"{provider_label(data['provider'])} connected.")
         )
     else:
-        st.session_state.flash = ("error", "Dropbox access was not granted.")
+        st.session_state.flash = ("error", "Access to your storage was not granted.")
+    st.session_state.pop("confirm_connect", None)
     st.query_params.clear()
     st.session_state.page = "My documents"
     st.rerun()
@@ -300,9 +306,9 @@ def documents_page() -> None:
     st.subheader("My documents")
     st.caption(
         "Your documents are stored and searched only for your account. Read-only "
-        "access to the Dropbox folder you choose; you can disconnect and delete "
-        "everything at any time. The service operator has technical access to the "
-        "database and could in principle read stored text."
+        "access to the one Dropbox or Google Drive folder you choose; you can "
+        "disconnect and delete everything at any time. The service operator has "
+        "technical access to the database and could in principle read stored text."
     )
     if flash := st.session_state.pop("flash", None):
         (st.success if flash[0] == "success" else st.error)(flash[1])
@@ -312,54 +318,60 @@ def documents_page() -> None:
         st.error(problem)
         return
     st.session_state.account = info
-    dropbox = info["dropbox"]
+    storage = info["storage"]
 
     st.markdown("#### Your index")
-    if dropbox["documents_indexed"] or dropbox["documents_skipped"]:
+    if storage["documents_indexed"] or storage["documents_skipped"]:
         first, second, third = st.columns(3)
-        first.metric("Indexed files", dropbox["documents_indexed"])
-        second.metric("Searchable passages", dropbox["chunks"])
-        third.metric("Skipped or failed", dropbox["documents_skipped"])
-        if dropbox["last_indexed_at"]:
-            st.caption(f"Last file indexed: {format_time(dropbox['last_indexed_at'])}")
-        for source in dropbox["sources"]:
+        first.metric("Indexed files", storage["documents_indexed"])
+        second.metric("Searchable passages", storage["chunks"])
+        third.metric("Skipped or failed", storage["documents_skipped"])
+        if storage["last_indexed_at"]:
+            st.caption(f"Last file indexed: {format_time(storage['last_indexed_at'])}")
+        for source in storage["sources"]:
             st.write(
-                f"Dropbox folder `{source['folder']}`: {source['documents_indexed']} "
-                f"files indexed, last sync {format_time(source['last_sync'])}."
+                f"{provider_label(source['provider'])} folder `{source['folder']}`: "
+                f"{source['documents_indexed']} files indexed, last sync "
+                f"{format_time(source['last_sync'])}."
             )
     else:
         st.write("Nothing is indexed yet.")
 
-    st.markdown("#### Dropbox connection")
-    if not dropbox["connected"]:
-        if dropbox["sources"]:
+    st.markdown("#### Storage connection")
+    available = storage["available"]
+    if not storage["connected"]:
+        if storage["sources"]:
             st.info(
-                "These documents were imported before your own Dropbox connection "
-                "existed. They stay searchable, but nothing is synced automatically. "
-                "Connect your Dropbox and choose the same folder to keep them up to date."
+                "These documents were imported before you connected your storage. "
+                "They stay searchable, but nothing is synced automatically. Connect the "
+                "same provider and choose the same folder to keep them up to date."
             )
         else:
-            st.write("Connect your Dropbox to build your own searchable document index.")
-        if st.button("Connect Dropbox"):
-            data, problem = call("POST", "/dropbox/authorize")
-            if problem:
-                st.error(problem)
-            else:
-                st.link_button("Continue to Dropbox", data["url"])
-        remove_data_section(connected=False)
+            st.write(
+                "Connect Dropbox or Google Drive and choose one folder to build your "
+                "own searchable document index."
+            )
+        if not available:
+            st.warning("No storage provider is configured on the server.")
+        else:
+            provider = st.radio(
+                "Where are your documents?",
+                available,
+                format_func=provider_label,
+                horizontal=True,
+            )
+            connect_controls(provider)
+        remove_data_section(None)
         return
 
-    st.write(f"Dropbox connected. Folder: `{dropbox['folder'] or 'not chosen yet'}`")
-    folder = st.text_input(
-        "Dropbox folder", value=dropbox["folder"] or "", placeholder="/Documents/notes"
+    provider = storage["provider"]
+    label = provider_label(provider)
+    account = f" as {storage['account']}" if storage["account"] else ""
+    st.write(
+        f"Connected to {label}{account}. "
+        f"Folder: `{storage['folder_name'] or 'not chosen yet'}`"
     )
-    if st.button("Save folder"):
-        _, problem = call("PUT", "/dropbox/folder", json={"folder": folder})
-        if problem:
-            st.error(problem)
-        else:
-            st.success("Folder saved.")
-            st.rerun()
+    folder_controls(provider, storage)
 
     st.caption(f"Limit: {info['files_per_sync']} files per sync.")
     sync = info["sync"]
@@ -370,21 +382,108 @@ def documents_page() -> None:
         st.caption(line)
 
     left, right = st.columns(2)
-    if left.button("Sync now", disabled=not dropbox["folder"]):
+    if left.button("Sync now", disabled=not storage["folder"]):
         _, problem = call("POST", "/sync")
         (st.error(problem) if problem else st.info("Sync started; refresh in a minute."))
     right.button("Refresh status")
-    remove_data_section(connected=True)
+
+    for other in (name for name in available if name != provider):
+        with st.expander(f"Use {provider_label(other)} instead"):
+            st.write(
+                f"Your {label} connection is replaced and the documents indexed from "
+                f"{label} are deleted. You can choose one folder in "
+                f"{provider_label(other)} afterwards."
+            )
+            connect_controls(other)
+    remove_data_section(provider)
 
 
-def remove_data_section(connected: bool) -> None:
+def connect_controls(provider: str) -> None:
+    """Connect button; switching providers asks before documents are deleted."""
+    label = provider_label(provider)
+    pending = st.session_state.get("confirm_connect")
+    if pending and pending["provider"] == provider:
+        st.warning(pending["message"])
+        confirmed = st.checkbox(
+            "Yes, delete my indexed documents", key=f"confirm-connect-{provider}"
+        )
+        if not st.button(
+            f"Delete and connect {label}", disabled=not confirmed, key=f"go-{provider}"
+        ):
+            return
+        status, data, problem = call_with_status(
+            "POST", f"/storage/{provider}/authorize", json={"confirm_delete": True}
+        )
+    elif st.button(f"Connect {label}", key=f"connect-{provider}"):
+        status, data, problem = call_with_status(
+            "POST", f"/storage/{provider}/authorize", json={}
+        )
+        if status == 409:
+            st.session_state.confirm_connect = {"provider": provider, "message": problem}
+            st.rerun()
+    else:
+        return
+    if problem:
+        st.error(problem)
+        return
+    st.session_state.pop("confirm_connect", None)
+    st.link_button(f"Continue to {label}", data["url"])
+
+
+def folder_controls(provider: str, storage: dict) -> None:
+    """Folder input; changing the folder asks before documents are deleted."""
+    texts = PROVIDERS[provider]
+    current = storage["folder"] if provider == "dropbox" else ""
+    folder = st.text_input(
+        texts["folder_label"],
+        value=current or "",
+        placeholder=texts["placeholder"],
+        help=None
+        if provider == "dropbox"
+        else "Open the folder in Google Drive and copy the link from the address bar.",
+    )
+    pending = st.session_state.get("confirm_folder")
+    confirm = False
+    if pending and pending["folder"] == folder:
+        st.warning(pending["message"])
+        confirm = st.checkbox("Yes, delete my indexed documents", key="confirm-folder")
+        clicked = st.button("Delete and change folder", disabled=not confirm)
+    else:
+        clicked = st.button("Save folder")
+    if not clicked:
+        return
+    status, data, problem = call_with_status(
+        "PUT", "/storage/folder", json={"folder": folder, "confirm_delete": confirm}
+    )
+    if status == 409:
+        st.session_state.confirm_folder = {"folder": folder, "message": problem}
+        st.rerun()
+    if problem:
+        st.error(problem)
+        return
+    st.session_state.pop("confirm_folder", None)
+    deleted = data["documents_deleted"]
+    st.session_state.flash = (
+        "success",
+        f"Folder saved: {data['folder_name']}."
+        + (f" {deleted} documents of the previous folder were deleted." if deleted else ""),
+    )
+    st.rerun()
+
+
+def remove_data_section(provider: str | None) -> None:
     st.markdown("#### Remove data")
-    with st.expander("Disconnect Dropbox or delete my documents"):
-        if connected:
+    title = (
+        f"Disconnect {provider_label(provider)} or delete my documents"
+        if provider
+        else "Delete my documents"
+    )
+    with st.expander(title):
+        if provider:
             remove = st.checkbox("Also delete all my indexed documents")
-            if st.button("Disconnect Dropbox"):
+            if st.button(f"Disconnect {provider_label(provider)}"):
                 _, problem = call(
-                    "DELETE", "/dropbox", params={"delete_documents": remove}
+                    "DELETE", "/storage", params={"delete_documents": remove}
                 )
                 if problem:
                     st.error(problem)

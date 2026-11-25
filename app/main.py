@@ -8,11 +8,12 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
-from app import access, documents, dropbox_oauth, jobs, notify, users, wake
+from app import access, documents, jobs, notify, storage, users, wake
 from app.auth import current_admin, current_identity, current_user
 from app.crypto import CryptoError
 from app.db import get_connection
 from app.generation import GenerationError, generate_answer
+from app.oauth import OAuthError
 from app.quota import QuotaExceeded, consume_chat
 from app.search import MODEL_NAME, search_documents
 from app.users import User
@@ -45,15 +46,22 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=3, ge=1, le=20)
 
 
-class DropboxCallback(BaseModel):
+class StorageCallback(BaseModel):
     code: str = Field(min_length=1, max_length=2048)
     state: str = Field(min_length=1, max_length=256)
+
+
+class AuthorizeRequest(BaseModel):
+    # Required when connecting another provider would delete indexed documents.
+    confirm_delete: bool = False
 
 
 class FolderRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     folder: str = Field(max_length=1024)
+    # Required when the new folder would delete documents of another folder.
+    confirm_delete: bool = False
 
 
 class AccessRequestBody(BaseModel):
@@ -197,8 +205,14 @@ def _service_errors(what: str):
     """Map storage/crypto failures of the account routes to HTTP errors."""
     try:
         yield
-    except dropbox_oauth.OAuthError as exc:
+    except OAuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    except storage.ConfirmationRequired as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This deletes your {exc.documents} indexed documents of the current "
+            "folder. Confirm to continue.",
+        ) from None
     except CryptoError:
         logger.exception("Token encryption is not usable")
         raise HTTPException(status_code=503, detail=f"{what} is not available") from None
@@ -213,7 +227,7 @@ def _service_errors(what: str):
 @app.get("/me")
 def me(user: User = Depends(current_user)):
     with _service_errors("Account"):
-        dropbox = dropbox_oauth.status(user)
+        storage_status = storage.status(user)
         job = jobs.latest(user.id)
         pending = access.pending_count(user) if user.is_admin else None
     return {
@@ -222,7 +236,7 @@ def me(user: User = Depends(current_user)):
         "pending_requests": pending,
         "chats_per_day": user.chats_per_day,
         "files_per_sync": user.files_per_sync,
-        "dropbox": dropbox,
+        "storage": storage_status,
         "sync": _public_job(job),
     }
 
@@ -300,44 +314,56 @@ def admin_rotate_invite(admin: User = Depends(current_admin)):
         return {"code": access.rotate_invite_code(admin)}
 
 
-@app.post("/dropbox/authorize")
-def dropbox_authorize(user: User = Depends(current_user)):
-    with _service_errors("Dropbox"):
-        return {"url": dropbox_oauth.start_authorization(user)}
+@app.post("/storage/{provider}/authorize")
+def storage_authorize(
+    provider: Literal["dropbox", "google_drive"],
+    payload: AuthorizeRequest | None = None,
+    user: User = Depends(current_user),
+):
+    confirm = payload.confirm_delete if payload else False
+    with _service_errors("Storage"):
+        return {"url": storage.start_authorization(user, provider, confirm)}
 
 
-@app.post("/dropbox/callback")
-def dropbox_callback(payload: DropboxCallback, user: User = Depends(current_user)):
-    with _service_errors("Dropbox"):
-        dropbox_oauth.complete_authorization(user, payload.code, payload.state)
-        users.audit(user.id, "dropbox_connected")
-    return {"connected": True}
+@app.post("/storage/callback")
+def storage_callback(payload: StorageCallback, user: User = Depends(current_user)):
+    with _service_errors("Storage"):
+        provider = storage.complete_authorization(user, payload.code, payload.state)
+        users.audit(user.id, "storage_connected", f"provider={provider}")
+    return {"connected": True, "provider": provider}
 
 
-@app.put("/dropbox/folder")
-def dropbox_folder(payload: FolderRequest, user: User = Depends(current_user)):
-    with _service_errors("Dropbox"):
-        return {"folder": dropbox_oauth.set_folder(user, payload.folder)}
+@app.put("/storage/folder")
+def storage_folder(payload: FolderRequest, user: User = Depends(current_user)):
+    with _service_errors("Storage"):
+        result = storage.set_folder(user, payload.folder, payload.confirm_delete)
+        if result["documents_deleted"]:
+            users.audit(
+                user.id, "folder_changed", f"documents_deleted={result['documents_deleted']}"
+            )
+    return result
 
 
-@app.delete("/dropbox")
-def dropbox_disconnect(
+@app.delete("/storage")
+def storage_disconnect(
     delete_documents: bool = False, user: User = Depends(current_user)
 ):
-    with _service_errors("Dropbox"):
-        dropbox_oauth.disconnect(user, delete_documents)
-        users.audit(user.id, "dropbox_disconnected", f"delete_documents={delete_documents}")
+    with _service_errors("Storage"):
+        storage.disconnect(user, delete_documents)
+        users.audit(user.id, "storage_disconnected", f"delete_documents={delete_documents}")
     return {"connected": False, "documents_deleted": delete_documents}
 
 
 @app.post("/sync", status_code=202)
 def start_sync(user: User = Depends(current_user)):
     with _service_errors("Sync"):
-        status = dropbox_oauth.status(user)
+        status = storage.status(user)
         if not status["connected"]:
-            raise HTTPException(status_code=409, detail="Connect Dropbox first.")
+            raise HTTPException(
+                status_code=409, detail="Connect Dropbox or Google Drive first."
+            )
         if status["folder"] is None:
-            raise HTTPException(status_code=409, detail="Choose a Dropbox folder first.")
+            raise HTTPException(status_code=409, detail="Choose a folder first.")
         job, created = jobs.enqueue(user.id)
     if created:
         jobs.trigger_worker()

@@ -22,6 +22,23 @@ SUBMIT_MESSAGES = {
     "too_many": ("warning", "Too many open requests right now. Please try again later."),
 }
 
+PROVIDERS = {
+    "dropbox": {
+        "label": "Dropbox",
+        "folder_label": "Dropbox folder",
+        "placeholder": "/Documents/notes",
+    },
+    "google_drive": {
+        "label": "Google Drive",
+        "folder_label": "Google Drive folder link",
+        "placeholder": "https://drive.google.com/drive/folders/...",
+    },
+}
+
+
+def provider_label(provider: str | None) -> str:
+    return PROVIDERS.get(provider or "", {}).get("label", provider or "storage")
+
 
 def extract_invite_code(value: str | None) -> str | None:
     """The invite code from a code or a pasted invite link; None if it is not valid."""

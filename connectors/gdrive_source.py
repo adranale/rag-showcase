@@ -18,8 +18,27 @@ OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME = "application/vnd.google-apps.folder"
 FOLDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+# drive.google.com/drive/folders/<id>, .../drive/u/0/folders/<id>, ...?id=<id>
+FOLDER_LINK_PATTERNS = (
+    re.compile(r"/folders/([A-Za-z0-9_-]+)"),
+    re.compile(r"[?&]id=([A-Za-z0-9_-]+)"),
+)
 TIMEOUT = 60.0
 FIELDS = "nextPageToken,files(id,name,mimeType,md5Checksum,version,size,webViewLink)"
+
+
+def parse_folder_id(value: str) -> str | None:
+    """The folder ID from a Google Drive folder link or a bare ID, else None."""
+    value = value.strip()
+    if FOLDER_ID_PATTERN.match(value):
+        return value
+    if not value.startswith(("https://drive.google.com/", "drive.google.com/")):
+        return None
+    for pattern in FOLDER_LINK_PATTERNS:
+        match = pattern.search(value)
+        if match:
+            return match.group(1)
+    return None
 
 
 def service_account_token_provider(info: dict) -> Callable[[], str]:
@@ -38,39 +57,53 @@ def service_account_token_provider(info: dict) -> Callable[[], str]:
     return provider
 
 
+class OAuthTokenProvider:
+    """Access tokens from a user's refresh token; `reset()` forces a new one."""
+
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        client: httpx.Client,
+    ) -> None:
+        self._data = {
+            "grant_type": "refresh_token",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "refresh_token": refresh_token,
+        }
+        self._client = client
+        self._token: str | None = None
+
+    def __call__(self) -> str:
+        if self._token is None:
+            response = self._client.post(OAUTH_TOKEN_URL, data=self._data)
+            if response.status_code != 200:
+                raise ConnectorError(
+                    f"Google token refresh failed (HTTP {response.status_code})"
+                )
+            self._token = response.json()["access_token"]
+        return self._token
+
+    def reset(self) -> None:
+        self._token = None
+
+
 def oauth_token_provider(
     client_id: str,
     client_secret: str,
     refresh_token: str,
     client: httpx.Client,
-) -> Callable[[], str]:
-    cached: dict[str, str] = {}
-
-    def provider() -> str:
-        if "token" not in cached:
-            response = client.post(
-                OAUTH_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "refresh_token": refresh_token,
-                },
-            )
-            if response.status_code != 200:
-                raise ConnectorError(
-                    f"Google token refresh failed (HTTP {response.status_code})"
-                )
-            cached["token"] = response.json()["access_token"]
-        return cached["token"]
-
-    return provider
+) -> OAuthTokenProvider:
+    return OAuthTokenProvider(client_id, client_secret, refresh_token, client)
 
 
 class GoogleDriveSource:
     """Read-only Google Drive source (scope: drive.readonly).
 
-    ``folder`` is a Drive folder ID. With a service account, the folder must be
+    ``folder`` is a Drive folder ID. Per-user access uses the user's OAuth refresh
+    token (`for_user`); with a service account (`from_env`), the folder must be
     shared with the service account's e-mail address.
     """
 
@@ -84,11 +117,24 @@ class GoogleDriveSource:
     ) -> None:
         if not FOLDER_ID_PATTERN.match(folder):
             raise ConnectorError(
-                "--folder must be a Google Drive folder ID (letters, digits, - and _)"
+                "The Google Drive folder ID is invalid (letters, digits, - and _)"
             )
         self._folder = folder
         self._token_provider = token_provider
         self._client = client or httpx.Client(timeout=TIMEOUT)
+
+    @classmethod
+    def for_user(
+        cls,
+        folder: str,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        client: httpx.Client | None = None,
+    ):
+        client = client or httpx.Client(timeout=TIMEOUT)
+        provider = OAuthTokenProvider(client_id, client_secret, refresh_token, client)
+        return cls(folder, provider, client)
 
     @classmethod
     def from_env(cls, folder: str, client: httpx.Client | None = None):
@@ -121,17 +167,44 @@ class GoogleDriveSource:
     def account_identifier(self) -> str:
         return self._folder
 
+    def _request(self, path: str, params: dict) -> httpx.Response:
+        for attempt in range(2):
+            response = self._client.get(
+                f"{API_URL}{path}",
+                params={"supportsAllDrives": "true", **params},
+                headers={"Authorization": f"Bearer {self._token_provider()}"},
+            )
+            reset = getattr(self._token_provider, "reset", None)
+            if response.status_code == 401 and attempt == 0 and reset is not None:
+                # The access token (valid for about an hour) expired during a long run.
+                reset()
+                continue
+            return response
+        return response
+
     def _get(self, path: str, params: dict) -> httpx.Response:
-        response = self._client.get(
-            f"{API_URL}{path}",
-            params={"supportsAllDrives": "true", **params},
-            headers={"Authorization": f"Bearer {self._token_provider()}"},
-        )
+        response = self._request(path, params)
         if response.status_code != 200:
             raise ConnectorError(
                 f"Google Drive request failed (HTTP {response.status_code})"
             )
         return response
+
+    def check_folder(self) -> str | None:
+        """The folder's name, or None if it is not a folder the user can read."""
+        response = self._request(
+            f"/files/{self._folder}", {"fields": "id,name,mimeType,trashed"}
+        )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise ConnectorError(
+                f"Google Drive request failed (HTTP {response.status_code})"
+            )
+        item = response.json()
+        if item.get("mimeType") != FOLDER_MIME or item.get("trashed"):
+            return None
+        return item.get("name") or self._folder
 
     def _children(self, folder_id: str) -> Iterator[dict]:
         page_token: str | None = None
