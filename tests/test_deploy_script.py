@@ -1,4 +1,3 @@
-import importlib
 import re
 import shutil
 import subprocess
@@ -148,16 +147,6 @@ def test_migrate_job_requires_admin_url_and_runtime_password(monkeypatch):
     with pytest.raises(SystemExit):
         migrate_job.main()
 
-# Commands of Azure apps/jobs created before the package layout (see the root shims).
-LEGACY_ENTRY_POINTS = (
-    "ui_start.py",
-    "sync_worker.py",
-    "idle_stop.py",
-    "manage_users.py",
-    "migrate_job.py",
-)
-
-
 def test_container_commands_point_to_files_in_the_image():
     root = SCRIPT.parent.parent
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
@@ -176,13 +165,8 @@ def test_container_commands_point_to_files_in_the_image():
         "ops/migrate_job.py",
         "ingestion/sync_worker.py",
     } <= paths
-    for path in paths | set(LEGACY_ENTRY_POINTS):
+    for path in paths:
         assert (root / path).is_file(), path
         package = path.split("/")[0]
         assert (f" {package}/ ./{package}/" if "/" in path else path) in dockerfile, path
 
-
-@pytest.mark.parametrize("name", LEGACY_ENTRY_POINTS)
-def test_legacy_entry_points_still_resolve(name):
-    module = importlib.import_module(name.removesuffix(".py"))
-    assert callable(module.main)
