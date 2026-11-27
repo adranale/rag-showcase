@@ -13,13 +13,13 @@ from pathlib import Path
 from psycopg.types.json import Jsonb
 
 from app.db import get_connection
-from connectors.chunking import split_paragraphs
+from connectors.chunking import PipelineChunker
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_FOLDER = PROJECT_ROOT / "data" / "sample"
 
 
-def ingest_file(path: Path):
+def ingest_file(path: Path, chunker: PipelineChunker):
     text = path.read_text(encoding="utf-8").strip()
 
     if not text:
@@ -28,7 +28,7 @@ def ingest_file(path: Path):
     content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
     external_file_id = path.relative_to(SAMPLE_FOLDER).as_posix()
 
-    paragraphs = split_paragraphs(text)
+    document = chunker.chunk("text", text.encode("utf-8"))
 
     with get_connection() as conn:
         source = conn.execute(
@@ -93,7 +93,7 @@ def ingest_file(path: Path):
             (document_id,),
         )
 
-        for number, paragraph in enumerate(paragraphs):
+        for number, chunk in enumerate(document.chunks):
             conn.execute(
                 """
                 INSERT INTO chunks (
@@ -108,15 +108,15 @@ def ingest_file(path: Path):
                 (
                     document_id,
                     number,
-                    paragraph,
-                    Jsonb({"paragraph": number + 1}),
-                    "paragraph-v1",
+                    chunk["text"],
+                    Jsonb(chunk["location_metadata"]),
+                    document.chunking_version,
                 ),
             )
 
     print(
         f"Stored: {external_file_id} | "
-        f"document_id={document_id} | chunks={len(paragraphs)}"
+        f"document_id={document_id} | chunks={len(document.chunks)}"
     )
 
 def main():
@@ -133,11 +133,12 @@ def main():
         print("No TXT or Markdown documents found.")
         return
 
+    chunker = PipelineChunker(ocr=None)
     failures = []
 
     for path in files:
         try:
-            ingest_file(path)
+            ingest_file(path, chunker)
         except Exception as exc:
             failures.append(path.name)
             print(f"FAILED: {path.name}: {exc}")

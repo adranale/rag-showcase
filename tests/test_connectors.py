@@ -285,7 +285,9 @@ class MemoryStore:
 
     def documents(self, connection_id):
         return {
-            ext: StoredDocument(i, d["version"], d["hash"], d["status"])
+            ext: StoredDocument(
+                i, d["version"], d["hash"], d["status"], d.get("chunking")
+            )
             for i, (ext, d) in enumerate(self.docs.items())
         }
 
@@ -294,6 +296,7 @@ class MemoryStore:
             "version": remote.version,
             "hash": document.content_hash,
             "status": "pending",
+            "chunking": document.chunking_version,
         }
 
     def update_version(self, document_id, version):
@@ -430,3 +433,86 @@ def test_failed_log_line_shows_full_dropbox_path(capsys):
     sync(FakeConnector([dropbox], fail_ids={"a"}), MemoryStore(), FakeChunker())
 
     assert "FAILED: /Unterlagen/Steuer/a.txt:" in capsys.readouterr().out
+
+
+def test_sync_rechunks_documents_of_an_older_chunking_generation():
+    from connectors.chunking import CHUNKING_GENERATION
+
+    class CurrentChunker(FakeChunker):
+        generation = CHUNKING_GENERATION
+
+        def chunk(self, kind, data):
+            return ChunkedDocument(
+                data.decode()[:1], f"{CHUNKING_GENERATION}-text", [{"text": "t"}]
+            )
+
+    store = MemoryStore()
+    store.docs = {
+        "old": {"version": "1", "hash": "1", "status": "indexed", "chunking": "page-token-window-v1"},
+        "ocr": {"version": "1", "hash": "1", "status": "indexed", "chunking": "ocr-page-token-window-v1"},
+        "new": {"version": "1", "hash": "1", "status": "indexed", "chunking": f"{CHUNKING_GENERATION}-pdf"},
+        "bad": {"version": "1", "hash": None, "status": "unsupported", "chunking": None},
+    }
+    files = [remote(name, "1") for name in ("old", "ocr", "new", "bad")]
+
+    connector = FakeConnector(files)
+    result = sync(connector, store, CurrentChunker())
+
+    # Same content and revision, but old chunks: saved again, not just skipped.
+    assert result.ingested == ["old"] and connector.downloads == ["old"]
+    assert store.docs["old"]["chunking"] == f"{CHUNKING_GENERATION}-text"
+    # OCR'd (billed per page), current and unsupported documents are left alone.
+    assert sorted(result.skipped) == ["bad", "new", "ocr"]
+
+    # A chunker without a generation (e.g. tests, legacy tools) never forces it.
+    store.docs["old"]["chunking"] = "page-token-window-v1"
+    assert sync(FakeConnector(files), store, FakeChunker()).ingested == []
+
+
+def test_failed_rechunk_is_not_retried_until_the_file_changes():
+    from connectors.base import PermanentDocumentError
+    from connectors.chunking import CHUNKING_GENERATION
+
+    class Unreadable(FakeChunker):
+        generation = CHUNKING_GENERATION
+
+        def chunk(self, kind, data):
+            raise PermanentDocumentError("Encrypted PDFs are not supported.")
+
+    store = MemoryStore()
+    # Indexed by the old chunker; mark_failed keeps the old chunks (and version).
+    store.docs = {
+        "a": {"version": "1", "hash": "1", "status": "indexed", "chunking": "page-token-window-v1"}
+    }
+    first = FakeConnector([remote("a", "1")])
+    assert sync(first, store, Unreadable()).unsupported == ["a"]
+    assert store.docs["a"]["chunking"] == "page-token-window-v1"
+
+    again = FakeConnector([remote("a", "1")])
+    assert sync(again, store, Unreadable()).skipped == ["a"] and again.downloads == []
+
+
+def test_splitter_chunks_fit_the_model_and_carry_exact_offsets():
+    from connectors.chunking import PipelineChunker
+
+    chunker = PipelineChunker(ocr=None)
+    paragraph = (
+        "Reisekosten werden nur mit Beleg und vorheriger Genehmigung erstattet. "
+        "Volunteers must keep receipts for travel, meals and lodging. "
+    )
+    text = "\n\n".join(paragraph * (n % 5 + 1) for n in range(12))
+    text += "\n\n" + "Kontonummer" * 120  # one long word: needs a hard split
+
+    result = chunker.chunk("text", text.encode("utf-8"))
+
+    assert result.chunking_version.startswith("lc-recursive-v1")
+    stripped = text.strip()
+    for chunk in result.chunks:
+        location = chunk["location_metadata"]
+        assert stripped[location["char_start"] : location["char_end"]] == chunk["text"]
+        assert chunker._token_count(chunk["text"]) <= chunker._model_limit
+    # Paragraph breaks are preferred: no chunk starts in the middle of a word.
+    assert all(
+        location["char_start"] == 0 or not stripped[location["char_start"] - 1].isalnum()
+        for location in (chunk["location_metadata"] for chunk in result.chunks[:5])
+    )

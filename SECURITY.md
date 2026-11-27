@@ -17,3 +17,5 @@ real credentials or personal data in a report.
 Each user's documents are isolated by PostgreSQL row-level security and `user_id` filters; Dropbox and Google Drive refresh tokens are encrypted at rest. The service operator (database administrator / app owner) can still technically access all data; this is disclosed to users. Work/school Microsoft accounts are not supported yet. See [docs/multi-user.md](docs/multi-user.md) for details and limitations.
 
 Access requests through the shared invite link only reach the request table through `SECURITY DEFINER` functions; admin actions require an active user with `is_admin`, identified by the API-set `app.user_id` (the same trust boundary as row-level security: a compromised API can impersonate any user). Anyone holding the invite link can send a request, but nobody gets access without an admin's approval; regenerate the link if it leaks.
+
+LangChain's optional LangSmith tracing would send prompts, retrieved document text and answers to LangSmith; it is off unless `LANGSMITH_TRACING` / `LANGCHAIN_TRACING_V2` is set. Do not enable it for this deployment.

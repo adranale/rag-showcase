@@ -1,20 +1,20 @@
 from pgvector import Vector
 from pgvector.psycopg import register_vector
-from sentence_transformers import SentenceTransformer
 
 from app.config import EMBEDDING_DIMENSION, MODEL_NAME
 from app.db import get_connection
+from app.embeddings import ModelEmbeddings, load_embeddings
 
 SLICE_SIZE = 1000
 
 
 def main():
     print(f"Loading model: {MODEL_NAME}")
-    model = SentenceTransformer(MODEL_NAME, device="cpu")
+    embeddings = load_embeddings()
 
-    dimension = model.get_embedding_dimension()
+    dimension = embeddings.dimension
     print(f"Embedding dimension: {dimension}")
-    print(f"Maximum input length: {model.max_seq_length} tokens")
+    print(f"Maximum input length: {embeddings.max_seq_length} tokens")
 
     with get_connection() as conn:
         # The columns are created by sql/005_multi_user.sql (vector(384)).
@@ -24,10 +24,10 @@ def main():
                 f"(vector({EMBEDDING_DIMENSION})); update sql/ first."
             )
 
-        embed_pending(conn, model)
+        embed_pending(conn, embeddings)
 
 
-def embed_pending(conn, model: SentenceTransformer) -> int:
+def embed_pending(conn, embeddings: ModelEmbeddings) -> int:
     """Embed every chunk visible on `conn` that lacks a current embedding.
 
     On a user-scoped connection (get_connection(user_id)) only that user's chunks
@@ -55,29 +55,19 @@ def embed_pending(conn, model: SentenceTransformer) -> int:
     texts = [text for _, text in chunks]
 
     for chunk_id, text in chunks:
-        token_ids = model.tokenizer(
-            text,
-            truncation=False,
-            add_special_tokens=True,
-        )["input_ids"]
-
-        if len(token_ids) > model.max_seq_length:
+        tokens = embeddings.token_count(text)
+        if tokens > embeddings.max_seq_length:
             raise ValueError(
-                f"Chunk {chunk_id} has {len(token_ids)} tokens. "
-                f"The model limit is {model.max_seq_length}. "
+                f"Chunk {chunk_id} has {tokens} tokens. "
+                f"The model limit is {embeddings.max_seq_length}. "
                 "Split this chunk before embedding."
             )
 
     # Commit per slice so a timed-out run keeps its progress and a rerun resumes.
     for start in range(0, len(chunks), SLICE_SIZE):
         part = chunks[start : start + SLICE_SIZE]
-        embeddings = model.encode(
-            texts[start : start + SLICE_SIZE],
-            batch_size=16,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-        for (chunk_id, _), embedding in zip(part, embeddings):
+        vectors = embeddings.embed_documents(texts[start : start + SLICE_SIZE])
+        for (chunk_id, _), vector in zip(part, vectors):
             conn.execute(
                 """
                 UPDATE chunks
@@ -85,7 +75,7 @@ def embed_pending(conn, model: SentenceTransformer) -> int:
                     embedding_model = %s
                 WHERE id = %s;
                 """,
-                (Vector(embedding.tolist()), MODEL_NAME, chunk_id),
+                (Vector(vector), MODEL_NAME, chunk_id),
             )
         mark_indexed(conn)
         conn.commit()

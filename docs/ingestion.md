@@ -6,7 +6,7 @@ Users index their own Dropbox or Google Drive folder from the UI (**My documents
 
 1. **List** the folder recursively through the user's connector: `connectors/dropbox_source.py` (read-only scopes `files.metadata.read` and `files.content.read`) or `connectors/gdrive_source.py` (scope `drive.readonly`; the access token is refreshed when it expires during a long run). Folders with more files than the user's `files_per_sync` quota are rejected, never truncated (`connectors/limits.py`).
 2. **Download and extract** only new or changed files (`connectors/sync.py`, `connectors/extract.py`, `connectors/ocr.py`).
-3. **Chunk** the text into token windows that fit the embedding model (`connectors/chunking.py`).
+3. **Chunk** the text with LangChain's `RecursiveCharacterTextSplitter` (`connectors/chunking.py`): lengths are counted with the embedding model's tokenizer (max. 126 content tokens, 16 tokens overlap) and breaks prefer paragraphs, then lines, then words. Short paragraphs are merged into one chunk. Each chunk records its character range (and page/sheet/slide); a chunk that still exceeds the model limit is re-split exactly by token windows.
 4. **Store** documents and chunks for that user (`connectors/store.py`), then **embed** the new chunks (`ingestion/embed.py`).
 
 Logs contain counts and error types only, never file names or text.
@@ -25,7 +25,7 @@ Each folder is one `source_connections` row. Per file, `documents` stores the re
 - Files that vanished remotely are **tombstoned**: their chunks are deleted (search never returns them) and the row stays with `ingestion_status = 'removed'` and `removed_at`; a file that reappears is re-ingested. Removals are applied only after the listing succeeded and are skipped when the listing is empty (likely a wrong folder or permissions).
 - Files that fail with a transient error are marked `failed` (hidden from search) and retried on the next sync.
 - Files that can never be processed (no text, encrypted, empty, too small for OCR) get status `unsupported` and are skipped, without download or OCR, until their revision changes.
-- Chunks store a `chunking_version` and an `embedding_model`; search only uses chunks of the current model (`app/config.py`). After changing the model run `python -m ingestion.embed`.
+- Chunks store a `chunking_version` (current generation `lc-recursive-v1-*`) and an `embedding_model`. A sync re-chunks indexed documents whose chunks come from an older generation even when the file did not change (failed and unsupported ones keep the usual retry rules), so after an upgrade the next sync of every user re-downloads and re-indexes their folder (resumable if it times out). Documents that were OCR'd (`ocr-*` versions) are only re-chunked when the file changes, because OCR is billed per page. Embeddings: search only uses chunks of the current model (`app/config.py`). After changing the model run `python -m ingestion.embed`.
 
 ## Sample data (local development)
 

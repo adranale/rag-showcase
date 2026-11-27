@@ -1,8 +1,8 @@
 import re
+from typing import Protocol
 
 from pgvector import Vector
 from pgvector.psycopg import register_vector
-from sentence_transformers import SentenceTransformer
 
 from app.config import MODEL_NAME
 from app.db import get_connection
@@ -80,8 +80,16 @@ _FILTER = """
 """
 
 
+class QueryEmbeddings(Protocol):
+    """What the search needs from the embeddings (app.embeddings.ModelEmbeddings)."""
+
+    def check_query(self, text: str) -> None: ...
+
+    def embed_query(self, text: str) -> list[float]: ...
+
+
 def search_documents(
-    model: SentenceTransformer,
+    embeddings: QueryEmbeddings,
     question: str,
     top_k: int,
     user_id: int,
@@ -91,22 +99,8 @@ def search_documents(
     The keyword legs catch exact names, IDs and acronyms that embeddings miss.
     `similarity` stays the cosine similarity of the chunk, whichever leg found it.
     """
-    token_ids = model.tokenizer(
-        question,
-        truncation=False,
-        add_special_tokens=True,
-    )["input_ids"]
-
-    if len(token_ids) > model.max_seq_length:
-        raise ValueError(
-            f"Question exceeds the model's {model.max_seq_length}-token input limit."
-        )
-
-    embedding = model.encode(
-        question,
-        normalize_embeddings=True,
-    )
-    query_vector = Vector(embedding.tolist())
+    embeddings.check_query(question)
+    query_vector = Vector(embeddings.embed_query(question))
     candidates = max(top_k * 5, CANDIDATES_MIN)
     keywords = extract_keywords(question)
 

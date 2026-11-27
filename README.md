@@ -25,8 +25,9 @@ Good to know:
 | Backend | Python 3.12, FastAPI, Pydantic |
 | UI | Streamlit (Microsoft sign-in) |
 | Vector store | PostgreSQL 16 + pgvector, full-text search |
-| Embeddings | sentence-transformers (`paraphrase-multilingual-MiniLM-L12-v2`, CPU) |
-| LLM | Azure OpenAI `gpt-4.1-mini` (Ollama `llama3.2:3b` locally) |
+| RAG framework | LangChain: retriever, LCEL chain, chat models, text splitter, output parser |
+| Embeddings | sentence-transformers via LangChain `HuggingFaceEmbeddings` (`paraphrase-multilingual-MiniLM-L12-v2`, CPU) |
+| LLM | Azure OpenAI `gpt-4.1-mini` via `AzureChatOpenAI` (locally Ollama `llama3.2:3b` via `ChatOllama`) |
 | Documents | Dropbox and Google Drive APIs (OAuth, read-only); pypdf, python-docx, openpyxl, python-pptx; optional OCR with Azure Document Intelligence |
 | Hosting | Docker, Azure Container Apps, Azure Database for PostgreSQL, GitHub Actions (OIDC) |
 | Tests | pytest, Ruff |
@@ -44,11 +45,11 @@ flowchart LR
     api -->|prompt with passages| llm[Azure OpenAI]
 ```
 
-**Indexing.** The sync worker lists the user's Dropbox or Google Drive folder, downloads only new or changed files, extracts the text, splits it into chunks and embeds each chunk. Chunks and vectors are stored in PostgreSQL, tagged with the user's ID.
+**Indexing.** The sync worker lists the user's Dropbox or Google Drive folder, downloads only new or changed files, extracts the text, splits it into chunks with LangChain's recursive text splitter (sized by the embedding model's tokenizer) and embeds each chunk. Chunks and vectors are stored in PostgreSQL, tagged with the user's ID.
 
-**Answering.**
+**Answering** (one LangChain chain: retriever → prompt → chat model → parser, `app/rag.py`).
 1. The question is embedded with the same model.
-2. Hybrid search combines three rankings with reciprocal rank fusion: vector similarity, keyword search and file/folder-name matches.
+2. A LangChain retriever runs our hybrid search, which combines three rankings with reciprocal rank fusion: vector similarity, keyword search and file/folder-name matches.
 3. The top passages go to the LLM, which must answer in JSON and cite passage IDs.
 4. The API rejects answers whose citations do not match the supplied passages; if the documents do not contain the answer, it says so.
 

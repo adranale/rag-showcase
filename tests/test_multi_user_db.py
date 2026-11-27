@@ -173,21 +173,19 @@ def test_runtime_cannot_manage_users(admin_url, runtime):
 def test_search_returns_only_own_chunks(admin_url, runtime):
     from app.search import search_documents
 
-    class FakeModel:
-        max_seq_length = 128
+    class FakeEmbeddings:
+        def check_query(self, text):
+            pass
 
-        def __init__(self):
-            self.tokenizer = lambda text, **_: {"input_ids": [1, 2, 3]}
-
-        def encode(self, text, **_):
-            return np.ones(384, dtype=np.float32) / np.sqrt(384)
+        def embed_query(self, text):
+            return (np.ones(384, dtype=np.float32) / np.sqrt(384)).tolist()
 
     vector = np.ones(384, dtype=np.float32) / np.sqrt(384)
     a, b = make_user(admin_url), make_user(admin_url)
     add_document(admin_url, a, "searchalpha", vector)
     add_document(admin_url, b, "searchbeta", vector)
 
-    results = search_documents(FakeModel(), "searchalpha searchbeta", 10, user_id=a)
+    results = search_documents(FakeEmbeddings(), "searchalpha searchbeta", 10, user_id=a)
     assert [r["title"] for r in results] == ["searchalpha"]
 
 

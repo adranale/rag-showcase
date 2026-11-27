@@ -1,13 +1,26 @@
+"""Cited answer generation with LangChain chat models.
+
+The chat model is chosen by GENERATION_PROVIDER: `ollama` (default, local) or
+`azure_openai`. Prompt -> model -> PydanticOutputParser form one chain; the citation
+check below then makes sure the answer only cites the supplied passages.
+"""
+
 import json
+import logging
 import os
 import re
 
 import httpx
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-import logging
-
 logger = logging.getLogger(__name__)
+
+MAX_ANSWER_TOKENS = 512
 
 
 class GenerationError(Exception):
@@ -60,88 +73,85 @@ Use IDs such as S1 in citation_ids, without square brackets.
 """
 
 
-def _build_messages(question: str, sources: list[dict]) -> list[dict]:
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": json.dumps(
-                {"question": question, "sources": sources},
-                ensure_ascii=False,
-            ),
-        },
-    ]
+# A message object (not a template string): the prompt's JSON example contains braces.
+PROMPT = ChatPromptTemplate.from_messages(
+    [SystemMessage(content=SYSTEM_PROMPT), ("human", "{payload}")]
+)
 
 
-def _complete_with_ollama(question: str, sources: list[dict]) -> str:
-    base_url = os.getenv(
-        "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
-    ).rstrip("/")
-    model_name = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+def get_chat_model() -> Runnable:
+    """The configured chat model (JSON output, temperature 0)."""
+    provider = os.getenv("GENERATION_PROVIDER", "ollama").lower()
 
-    response = httpx.post(
-        f"{base_url}/api/chat",
-        json={
-            "model": model_name,
-            "stream": False,
-            "format": GeneratedAnswer.model_json_schema(),
-            "options": {
-                "temperature": 0,
-                "num_predict": 512,
-            },
-            "messages": _build_messages(question, sources),
-        },
-        timeout=httpx.Timeout(180.0, connect=5.0),
-    )
-    response.raise_for_status()
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
 
-    body = response.json()
-
-    generation_seconds = body.get("eval_duration", 0) / 1_000_000_000
-    generated_tokens = body.get("eval_count", 0)
-
-    logger.warning(
-        "Ollama timing: total=%.2fs load=%.2fs prompt=%.2fs "
-        "generation=%.2fs tokens=%s tokens_per_second=%.2f",
-        body.get("total_duration", 0) / 1_000_000_000,
-        body.get("load_duration", 0) / 1_000_000_000,
-        body.get("prompt_eval_duration", 0) / 1_000_000_000,
-        generation_seconds,
-        generated_tokens,
-        generated_tokens / generation_seconds
-        if generation_seconds > 0 else 0,
-    )
-
-    return body["message"]["content"]
-
-
-def _complete_with_azure_openai(question: str, sources: list[dict]) -> str:
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
-
-    if not (endpoint and deployment and api_key):
-        raise GenerationError(
-            "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT and "
-            "AZURE_OPENAI_API_KEY must be configured."
+        return ChatOllama(
+            model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
+            temperature=0,
+            num_predict=MAX_ANSWER_TOKENS,
+            format=GeneratedAnswer.model_json_schema(),
+            client_kwargs={"timeout": httpx.Timeout(180.0, connect=5.0)},
         )
 
-    response = httpx.post(
-        f"{endpoint}/openai/deployments/{deployment}/chat/completions",
-        params={"api-version": api_version},
-        headers={"api-key": api_key},
-        json={
-            "temperature": 0,
-            "max_tokens": 512,
-            "response_format": {"type": "json_object"},
-            "messages": _build_messages(question, sources),
-        },
-        timeout=httpx.Timeout(60.0, connect=5.0),
-    )
-    response.raise_for_status()
+    if provider == "azure_openai":
+        from langchain_openai import AzureChatOpenAI
 
-    return response.json()["choices"][0]["message"]["content"]
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        if not (endpoint and deployment and api_key):
+            raise GenerationError(
+                "AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT and "
+                "AZURE_OPENAI_API_KEY must be configured."
+            )
+        model: BaseChatModel = AzureChatOpenAI(
+            azure_endpoint=endpoint,
+            azure_deployment=deployment,
+            api_key=api_key,
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            temperature=0,
+            max_tokens=MAX_ANSWER_TOKENS,
+            timeout=httpx.Timeout(60.0, connect=5.0),
+            max_retries=1,
+        )
+        return model.bind(response_format={"type": "json_object"})
+
+    raise GenerationError(f"Unknown GENERATION_PROVIDER: {provider!r}")
+
+
+def _log_usage(message: AIMessage) -> AIMessage:
+    """Log Ollama's timing figures (other providers report none)."""
+    meta = getattr(message, "response_metadata", None) or {}
+    if "eval_duration" in meta:
+        seconds = (meta.get("eval_duration") or 0) / 1_000_000_000
+        tokens = meta.get("eval_count") or 0
+        logger.warning(
+            "Ollama timing: total=%.2fs load=%.2fs prompt=%.2fs "
+            "generation=%.2fs tokens=%s tokens_per_second=%.2f",
+            (meta.get("total_duration") or 0) / 1_000_000_000,
+            (meta.get("load_duration") or 0) / 1_000_000_000,
+            (meta.get("prompt_eval_duration") or 0) / 1_000_000_000,
+            seconds,
+            tokens,
+            tokens / seconds if seconds > 0 else 0,
+        )
+    return message
+
+
+def answer_chain(model: Runnable) -> Runnable:
+    """{"payload": json} -> GeneratedAnswer."""
+    return (
+        PROMPT
+        | model
+        | RunnableLambda(_log_usage)
+        | PydanticOutputParser(pydantic_object=GeneratedAnswer)
+    )
+
+
+def _payload(question: str, sources: list[dict]) -> str:
+    return json.dumps({"question": question, "sources": sources}, ensure_ascii=False)
 
 
 def generate_answer(question: str, passages: list[dict]) -> dict:
@@ -163,51 +173,18 @@ def generate_answer(question: str, passages: list[dict]) -> dict:
     ]
 
     try:
-        provider = os.getenv("GENERATION_PROVIDER", "ollama").lower()
-
-        if provider == "ollama":
-            content = _complete_with_ollama(question, sources)
-        elif provider == "azure_openai":
-            content = _complete_with_azure_openai(question, sources)
-        else:
-            raise GenerationError(
-                f"Unknown GENERATION_PROVIDER: {provider!r}"
-            )
-
-        generated = GeneratedAnswer.model_validate_json(content)
-
-    except httpx.HTTPStatusError as exc:
-
-        raise GenerationError(
-
-            f"Ollama returned HTTP {exc.response.status_code}: "
-        
-            f"{exc.response.text[:500]}"
-
-        ) from exc
-
-    except httpx.TimeoutException as exc:
-
-        raise GenerationError(
-
-            "Ollama did not respond within the configured timeout."
-
-        ) from exc
-
-    except httpx.RequestError as exc:
-
-        raise GenerationError(
-
-            f"Could not contact Ollama: {exc}"
-
-        ) from exc
-
+        chain = answer_chain(get_chat_model())
+        generated = chain.invoke({"payload": _payload(question, sources)})
+    except GenerationError:
+        raise
     except (ValueError, KeyError, IndexError, TypeError) as exc:
-
+        # Includes LangChain's OutputParserException (invalid or incomplete JSON).
         raise GenerationError(
-
             f"Invalid model response: {type(exc).__name__}: {exc}"
-
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - provider SDK, HTTP and timeout errors
+        raise GenerationError(
+            f"The language model request failed: {type(exc).__name__}: {exc}"
         ) from exc
 
     if generated.insufficient_evidence:
