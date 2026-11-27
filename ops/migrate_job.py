@@ -1,7 +1,7 @@
 """Container Apps Job entrypoint: apply the schema and set up the runtime role.
 
 Environment: ADMIN_DATABASE_URL (owner connection), RUNTIME_DB_PASSWORD, and
-optionally OWNER_EMAIL (assigns pre-v2 documents to that user). Both steps are
+optionally OWNER_EMAIL (assigns documents imported before multi-user mode to that user). Both steps are
 idempotent, so the job can be re-run.
 """
 

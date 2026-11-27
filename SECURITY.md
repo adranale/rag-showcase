@@ -12,7 +12,7 @@ Please do not open a public issue. Report vulnerabilities privately via
 Include the affected version, steps to reproduce and the impact. Never include
 real credentials or personal data in a report.
 
-## Multi-user data protection (v2)
+## Multi-user data protection
 
 Each user's documents are isolated by PostgreSQL row-level security and `user_id` filters; Dropbox and Google Drive refresh tokens are encrypted at rest. The service operator (database administrator / app owner) can still technically access all data; this is disclosed to users. Work/school Microsoft accounts are not supported yet. See [docs/multi-user.md](docs/multi-user.md) for details and limitations.
 

@@ -2,7 +2,7 @@
 
 A document assistant built on **retrieval-augmented generation (RAG)**: connect a Dropbox or Google Drive folder, ask questions in plain language, and get answers that cite the passages they are based on. Each user sees only their own documents.
 
-It is a compact, working reference for a RAG system: hybrid search on PostgreSQL/pgvector, citation checks, multi-user isolation and a low-cost Azure deployment that scales to zero. Status: **v2.1.0**, small private pilot, not production-hardened.
+It is a compact, working reference for a RAG system: hybrid search on PostgreSQL/pgvector, citation checks, multi-user isolation and a low-cost Azure deployment that scales to zero. Status: **v0.1.0** (pre-release), small private pilot, not production-hardened.
 
 ## Try it
 
