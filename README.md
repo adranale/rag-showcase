@@ -68,7 +68,6 @@ flowchart LR
 | `sql/` | Database schema and migrations (applied by `ops/init_db.py`) |
 | `deploy/`, `.github/workflows/` | Azure deployment scripts and CI/CD |
 | `tests/` | pytest suite |
-| `*.py` in the root | Old entry points kept for existing Azure apps/jobs (to be removed) |
 
 ## Run locally
 

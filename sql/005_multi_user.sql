@@ -169,7 +169,7 @@ GRANT USAGE ON SCHEMA public TO rag_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     source_connections, documents, chunks, dropbox_credentials, oauth_states,
     chat_usage, sync_jobs TO rag_runtime;
--- Users are invited by the owner (manage_users.py); the runtime may only read them
+-- Users are invited by the owner (ops/manage_users.py); the runtime may only read them
 -- and record the first login.
 GRANT SELECT ON users TO rag_runtime;
 GRANT UPDATE (entra_tid, entra_oid, display_name, status, last_login_at)

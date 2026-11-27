@@ -39,9 +39,6 @@ COPY --chown=appuser:appuser ingestion/ ./ingestion/
 COPY --chown=appuser:appuser ops/ ./ops/
 COPY --chown=appuser:appuser connectors/ ./connectors/
 COPY --chown=appuser:appuser sql/ ./sql/
-# Compatibility entry points for commands of existing Azure apps/jobs.
-COPY --chown=appuser:appuser ui_start.py sync_worker.py idle_stop.py \
-    manage_users.py migrate_job.py ./
 
 USER appuser
 
