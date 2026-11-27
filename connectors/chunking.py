@@ -10,12 +10,25 @@ from connectors.base import DocumentError, PermanentDocumentError
 from connectors.extract import EXTRACTORS
 from connectors.ocr import DocumentIntelligence, min_image_pixels
 
-# Stored per chunk; changing a version string re-chunks the affected documents.
-PDF_CHUNKING_VERSION = "page-token-window-v1"
-TEXT_CHUNKING_VERSION = "paragraph-token-window-v1"
-OFFICE_CHUNKING_VERSION = "office-token-window-v1"
-OCR_CHUNKING_VERSION = "ocr-page-token-window-v1"
+# Stored per chunk. The sync re-chunks documents whose chunks do not start with the
+# current generation (connectors/sync.py), except OCR'd ones (OCR is billed per page).
+CHUNKING_GENERATION = "lc-recursive-v1"
+PDF_CHUNKING_VERSION = f"{CHUNKING_GENERATION}-pdf"
+TEXT_CHUNKING_VERSION = f"{CHUNKING_GENERATION}-text"
+OFFICE_CHUNKING_VERSION = f"{CHUNKING_GENERATION}-office"
+OCR_CHUNKING_VERSION = f"{CHUNKING_GENERATION}-ocr"
+# Versions of documents that are only re-chunked when the file itself changes.
+KEEP_CHUNKING_PREFIXES = ("ocr-", OCR_CHUNKING_VERSION)
 OVERLAP = 16
+
+
+def needs_rechunk(stored_version: str | None) -> bool:
+    """True for documents chunked by an older generation (not for OCR'd ones)."""
+    return (
+        stored_version is not None
+        and not stored_version.startswith(CHUNKING_GENERATION)
+        and not stored_version.startswith(KEEP_CHUNKING_PREFIXES)
+    )
 
 
 def split_paragraphs(text: str) -> list[str]:
@@ -27,7 +40,10 @@ def split_paragraphs(text: str) -> list[str]:
 
 
 def split_page(text, tokenizer, max_tokens, overlap, model_limit):
-    """Split text into token windows without decoding token fragments."""
+    """Split text into token windows without decoding token fragments.
+
+    Exact fallback for the rare splitter chunk that exceeds the model limit.
+    """
     encoded = tokenizer(
         text,
         add_special_tokens=False,
@@ -88,16 +104,28 @@ class Chunker(Protocol):
     def chunk(self, kind: str, data: bytes) -> ChunkedDocument: ...
 
 
-class PipelineChunker:
-    """Chunks downloaded bytes with the existing project chunking code.
+def _offsets(part: dict) -> dict:
+    """Character range of a chunk, omitted when it could not be located."""
+    if part.get("char_start") is None:
+        return {}
+    return {"char_start": part["char_start"], "char_end": part["char_end"]}
 
-    The embedding model's tokenizer is loaded lazily, only when a changed file
-    needs chunking, so unchanged re-runs stay cheap. Scanned PDFs and images go
-    through Azure Document Intelligence when it is configured (see connectors/ocr.py).
+
+class PipelineChunker:
+    """Chunks downloaded bytes with LangChain's RecursiveCharacterTextSplitter.
+
+    Lengths are measured with the embedding model's tokenizer, so chunks fit the
+    model's input limit; the splitter prefers paragraph, then line, then word breaks.
+    The tokenizer is loaded lazily, only when a changed file needs chunking, so
+    unchanged re-runs stay cheap. Scanned PDFs and images go through Azure Document
+    Intelligence when it is configured (see connectors/ocr.py).
     """
+
+    generation = CHUNKING_GENERATION
 
     def __init__(self, ocr: DocumentIntelligence | None = None) -> None:
         self._tokenizer = None
+        self._splitter = None
         self._model_limit = 0
         self._budget = 0
         self._ocr = ocr if ocr is not None else DocumentIntelligence.from_env()
@@ -115,11 +143,43 @@ class PipelineChunker:
         self._budget = self._model_limit - self._tokenizer.num_special_tokens_to_add(
             pair=False
         )
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        self._splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+            self._tokenizer, chunk_size=self._budget, chunk_overlap=OVERLAP
+        )
+
+    def _token_count(self, text: str) -> int:
+        return len(
+            self._tokenizer(text, add_special_tokens=True, truncation=False)["input_ids"]
+        )
 
     def _windows(self, text: str):
-        return split_page(
-            text, self._tokenizer, self._budget, OVERLAP, self._model_limit
-        )
+        """{"text", "char_start", "char_end"} chunks of `text` within the model limit."""
+        cursor = 0
+        for part in self._splitter.split_text(text):
+            # The splitter's own start_index is unreliable with a token length
+            # function; chunks are substrings in order, so search forward.
+            start = text.find(part, cursor)
+            if start < 0:
+                start = text.find(part)
+            cursor = start + 1 if start >= 0 else cursor
+            if self._token_count(part) <= self._model_limit:
+                yield {
+                    "text": part,
+                    "char_start": start if start >= 0 else None,
+                    "char_end": start + len(part) if start >= 0 else None,
+                }
+                continue
+            offset = start if start >= 0 else 0
+            for window in split_page(
+                part, self._tokenizer, self._budget, OVERLAP, self._model_limit
+            ):
+                yield {
+                    **window,
+                    "char_start": window["char_start"] + offset,
+                    "char_end": window["char_end"] + offset,
+                }
 
     def chunk(self, kind: str, data: bytes) -> ChunkedDocument:
         if kind == "pdf":
@@ -140,8 +200,7 @@ class PipelineChunker:
                         "text": part["text"],
                         "location_metadata": {
                             "page_number": page_number,
-                            "char_start": part["char_start"],
-                            "char_end": part["char_end"],
+                            **_offsets(part),
                         },
                     }
                 )
@@ -163,11 +222,7 @@ class PipelineChunker:
                 chunks.append(
                     {
                         "text": part["text"],
-                        "location_metadata": {
-                            **location,
-                            "char_start": part["char_start"],
-                            "char_end": part["char_end"],
-                        },
+                        "location_metadata": {**location, **_offsets(part)},
                     }
                 )
         digest = hashlib.sha256(
@@ -216,16 +271,10 @@ class PipelineChunker:
         if not text:
             raise PermanentDocumentError("Document is empty.")
         self._load()
-        chunks = []
-        for number, paragraph in enumerate(split_paragraphs(text), start=1):
-            # Long paragraphs are split so no chunk exceeds the model limit.
-            for part in self._windows(paragraph):
-                chunks.append(
-                    {
-                        "text": part["text"],
-                        "location_metadata": {"paragraph": number},
-                    }
-                )
+        chunks = [
+            {"text": part["text"], "location_metadata": _offsets(part)}
+            for part in self._windows(text)
+        ]
         return ChunkedDocument(
             hashlib.sha256(text.encode("utf-8")).hexdigest(),
             TEXT_CHUNKING_VERSION,
@@ -250,8 +299,7 @@ class PipelineChunker:
                         "text": part["text"],
                         "location_metadata": {
                             "page_number": page_number,
-                            "char_start": part["char_start"],
-                            "char_end": part["char_end"],
+                            **_offsets(part),
                         },
                     }
                 )

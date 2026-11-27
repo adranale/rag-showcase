@@ -30,7 +30,7 @@ flowchart LR
 | `rag-api` (FastAPI, `app/`) | Internal ingress only. Embeds the question locally, runs the pgvector search, calls Azure OpenAI, validates the citations and returns the answer. |
 | PostgreSQL Flexible Server | Stores `documents`, `chunks` and the embeddings (`vector` extension, cosine distance). TLS is required. |
 | Azure OpenAI | Generates the cited JSON answer (`GENERATION_PROVIDER=azure_openai`). |
-| Embeddings | `sentence-transformers` on CPU inside the container image; the model is baked into the image so scale-from-zero does not download it. |
+| Embeddings | `sentence-transformers` (through LangChain `HuggingFaceEmbeddings`) on CPU inside the container image; the model is baked into the image so scale-from-zero does not download it. |
 | Container Apps environment | Hosts both apps (0–1 replicas, scale to zero) and sends logs to Log Analytics. |
 | `ghcr.io/adranale/rag-showcase` | One image for both apps. The UI overrides the start command; the default `CMD` serves FastAPI on `0.0.0.0:8000`. |
 
@@ -40,8 +40,8 @@ flowchart LR
 |---|---|
 | Language / API | Python 3.12, FastAPI, Uvicorn, Pydantic |
 | UI | Streamlit |
-| Retrieval | PostgreSQL 16 + pgvector, `sentence-transformers` (CPU torch wheels), psycopg |
-| Generation | Azure OpenAI chat completions (Ollama for local use) |
+| Retrieval | PostgreSQL 16 + pgvector, `sentence-transformers` (CPU torch wheels), psycopg; LangChain retriever and LCEL chain |
+| Generation | Azure OpenAI via LangChain `AzureChatOpenAI` (`ChatOllama` for local use) |
 | Container | Docker (`python:3.12-slim`, non-root user, `linux/amd64`) |
 | Hosting | Azure Container Apps, Azure Database for PostgreSQL Flexible Server, Azure OpenAI |
 | Automation | PowerShell 7 + Azure CLI (`deploy/azure.ps1`), GitHub Actions with OIDC |

@@ -6,7 +6,7 @@ from connectors.base import (
     SourceConnector,
     failure_detail,
 )
-from connectors.chunking import Chunker
+from connectors.chunking import Chunker, needs_rechunk
 from connectors.store import DocumentStore
 
 
@@ -39,13 +39,15 @@ def sync(
 ) -> SyncResult:
     """Make the database mirror the remote folder.
 
-    A file is re-ingested only when its remote version changed (or a previous
-    attempt failed). Files that vanished remotely are tombstoned (chunks deleted,
+    A file is re-ingested only when its remote version changed, a previous attempt
+    failed, or its chunks come from an older chunking generation (when the chunker
+    has a `generation`; OCR'd documents are kept to avoid paying for OCR again). Files that vanished remotely are tombstoned (chunks deleted,
     status 'removed') or hard-deleted. Removal only happens after the remote
     listing completed successfully, so an API error never wipes the index.
     `log_paths=False` keeps file names out of the logs (multi-user worker).
     """
     result = SyncResult()
+    rechunk = getattr(chunker, "generation", None) is not None
     connection_id = store.ensure_connection(
         connector.provider, connector.account_identifier
     )
@@ -54,8 +56,17 @@ def sync(
 
     for file_id, remote in remote_files.items():
         stored = known.get(file_id)
+        # Only usable documents are re-chunked: failed ones are retried anyway, and an
+        # unsupported one keeps its old chunks, so it would be re-processed forever.
+        outdated = (
+            rechunk
+            and stored is not None
+            and stored.status in ("pending", "indexed")
+            and needs_rechunk(stored.chunking_version)
+        )
         if (
             stored
+            and not outdated
             and stored.version == remote.version
             and stored.status in ("pending", "indexed", "unsupported")
         ):
@@ -65,6 +76,7 @@ def sync(
             document = chunker.chunk(remote.kind, connector.download(remote))
             if (
                 stored
+                and not outdated
                 and stored.status in ("pending", "indexed")
                 and stored.content_hash == document.content_hash
             ):

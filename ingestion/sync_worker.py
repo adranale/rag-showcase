@@ -61,24 +61,22 @@ def run_job(job: dict, load_model) -> bool:
     return False
 
 
-def _embed(conn, load_model) -> int:
+def _embed(conn, load_embeddings) -> int:
     from ingestion.embed import embed_pending
 
-    return embed_pending(conn, load_model())
+    return embed_pending(conn, load_embeddings())
 
 
 def main() -> int:
-    model = None
+    embeddings = None
 
     def load_model():
-        nonlocal model
-        if model is None:
-            from sentence_transformers import SentenceTransformer
+        nonlocal embeddings
+        if embeddings is None:
+            from app.embeddings import load_embeddings
 
-            from app.config import MODEL_NAME
-
-            model = SentenceTransformer(MODEL_NAME, device="cpu")
-        return model
+            embeddings = load_embeddings()
+        return embeddings
 
     processed = failures = 0
     while (job := jobs.claim_next()) is not None:

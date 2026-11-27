@@ -6,16 +6,17 @@ from typing import Literal
 import psycopg
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sentence_transformers import SentenceTransformer
 
 from app import access, documents, jobs, notify, storage, users, wake
 from app.auth import current_admin, current_identity, current_user
 from app.crypto import CryptoError
 from app.db import get_connection
-from app.generation import GenerationError, generate_answer
+from app.embeddings import load_embeddings
+from app.generation import GenerationError
 from app.oauth import OAuthError
 from app.quota import QuotaExceeded, consume_chat
-from app.search import MODEL_NAME, search_documents
+from app.rag import answer_question
+from app.retrieval import HybridRetriever, to_passages
 from app.users import User
 
 logger = logging.getLogger(__name__)
@@ -23,13 +24,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.embedding_model = SentenceTransformer(
-        MODEL_NAME,
-        device="cpu",
-    )
+    app.state.embeddings = load_embeddings()
     app.state.search_lock = Lock()
     yield
-    del app.state.embedding_model
+    del app.state.embeddings
 
 
 app = FastAPI(
@@ -117,13 +115,9 @@ def search(
     payload: SearchRequest, request: Request, user: User = Depends(current_user)
 ):
     try:
-        with request.app.state.search_lock:
-            results = search_documents(
-                model=request.app.state.embedding_model,
-                question=payload.question,
-                top_k=payload.top_k,
-                user_id=user.id,
-            )
+        results = to_passages(
+            _retriever(request, user, payload.top_k).invoke(payload.question)
+        )
 
     except ValueError as exc:
         raise HTTPException(
@@ -161,13 +155,9 @@ def chat(
         ) from None
 
     try:
-        with request.app.state.search_lock:
-            passages = search_documents(
-                model=request.app.state.embedding_model,
-                question=payload.question,
-                top_k=payload.top_k,
-                user_id=user.id,
-            )
+        result = answer_question(
+            _retriever(request, user, payload.top_k), payload.question
+        )
 
     except ValueError as exc:
         raise HTTPException(
@@ -182,22 +172,24 @@ def chat(
             detail=wake.describe(exc, "Search is temporarily unavailable"),
         ) from None
 
-    try:
-        result = generate_answer(payload.question, passages)
-
     except GenerationError:
         logger.exception("Answer generation failed")
         raise HTTPException(
             status_code=502,
             detail="Could not generate a valid cited answer. "
-                   "Check that Ollama is running and the model is installed.",
+                   "Check that the language model is reachable and configured.",
         ) from None
 
-    return {
-        "question": payload.question,
-        "retrieved_count": len(passages),
-        **result,
-    }
+    return {"question": payload.question, **result}
+
+
+def _retriever(request: Request, user: User, top_k: int) -> HybridRetriever:
+    return HybridRetriever(
+        embeddings=request.app.state.embeddings,
+        user_id=user.id,
+        top_k=top_k,
+        lock=request.app.state.search_lock,
+    )
 
 
 @contextmanager

@@ -14,6 +14,8 @@ class StoredDocument:
     version: str | None
     content_hash: str | None
     status: str
+    # Of the stored chunks; None when the document has none.
+    chunking_version: str | None = None
 
 
 class DocumentStore(Protocol):
@@ -68,10 +70,12 @@ class PostgresStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT external_file_id, id, source_version, content_hash,
-                       ingestion_status
-                FROM documents
-                WHERE connection_id = %s;
+                SELECT d.external_file_id, d.id, d.source_version, d.content_hash,
+                       d.ingestion_status,
+                       (SELECT min(c.chunking_version) FROM chunks AS c
+                        WHERE c.document_id = d.id)
+                FROM documents AS d
+                WHERE d.connection_id = %s;
                 """,
                 (connection_id,),
             ).fetchall()
