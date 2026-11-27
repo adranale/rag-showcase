@@ -230,7 +230,7 @@ def test_document_chunks_and_status_are_scoped_to_the_owner(admin_url, runtime):
     assert [c["text"] for c in result["chunks"]] == ["secret text of alpha"]
     assert documents.document_chunks(user_b, document_id) is None
 
-    # Indexed data without stored credentials still shows up (pre-v2 import).
+    # Indexed data without stored credentials still shows up (imported before sign-in existed).
     status = storage.status(user_a)
     assert status["connected"] is False and status["provider"] is None
     assert status["documents_indexed"] == 1 and status["chunks"] == 1

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Upgrades an existing RAG Showcase Azure deployment to multi-user mode (v2).
+    Upgrades an existing RAG Showcase Azure deployment to multi-user mode.
 
 .DESCRIPTION
     Run AFTER deploy/azure.ps1 (infrastructure, rag-api, rag-ui exist). In ONE explicitly
@@ -46,7 +46,7 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$')][string]$SubscriptionId,
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]{3,10}$')][string]$Suffix,
-    # Immutable tag (commit SHA) of an image built from a commit that contains v2.
+    # Immutable tag (commit SHA) of an image built from a commit that contains multi-user mode.
     [Parameter(Mandatory)][ValidatePattern('^ghcr\.io/[a-z0-9._/-]+(:[\w.-]+|@sha256:[a-f0-9]{64})$')][string]$Image,
     [ValidatePattern('^[A-Za-z0-9._()-]{1,90}$')][string]$ResourceGroup = 'rg-rag-showcase',
     [string]$EnvironmentName = 'cae-rag-showcase',
@@ -441,7 +441,7 @@ Write-Host 'Next: invite users with the invite link on the Admin page of the UI 
 Write-Host '  or python -m ops.manage_users admin <email>). Without an admin, use the rag-admin job, e.g.'
 Write-Host "  az containerapp job start --resource-group $ResourceGroup --name rag-admin --subscription $SubscriptionId --command python --args ops/manage_users.py invite friend@outlook.com"
 Write-Host '  (add --tid/--oid for work accounts; output is in Log Analytics ContainerAppConsoleLogs_CL).'
-Write-Host 'The sample-data workflows write unowned documents that no user can see: do not use them in v2.'
+Write-Host 'The sample-data workflows write unowned documents that no user can see: do not use them in multi-user mode.'
 Write-Host 'Delete the rag-admin and rag-migrate jobs when not needed; they hold the admin connection string.'
 # A "secret not found" lookup leaves a non-zero native exit code; every real failure already threw.
 $global:LASTEXITCODE = 0

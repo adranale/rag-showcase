@@ -1,6 +1,6 @@
 name: Azure multi-user setup
 
-# Manual trigger only. Upgrades an existing deployment to multi-user mode (v2):
+# Manual trigger only. Upgrades an existing deployment to multi-user mode:
 # creates/updates the rag-migrate, rag-sync and rag-admin jobs and reconfigures rag-api
 # and rag-ui (see deploy/azure-multiuser.ps1). Preflight only by default. The CI identity
 # is scoped to the resource group and normally cannot create role assignments: the script

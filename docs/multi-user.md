@@ -1,6 +1,6 @@
-# Multi-user mode (v2)
+# Multi-user mode
 
-Invited users sign in with a Microsoft account, connect **their own Dropbox or Google Drive** (one provider and one folder per user) and query **only their own documents**. Released as v2.0.0 (invite link and access requests since v2.1.0) and running on the Azure test deployment. Deployment: see [deployment.md](deployment.md#upgrade-to-multi-user-mode-v2).
+Invited users sign in with a Microsoft account, connect **their own Dropbox or Google Drive** (one provider and one folder per user) and query **only their own documents**. Running on the Azure test deployment. Deployment: see [deployment.md](deployment.md#upgrade-to-multi-user-mode).
 
 ## How it works
 

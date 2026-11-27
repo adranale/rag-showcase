@@ -1,6 +1,6 @@
 # Azure deployment
 
-The Azure deployment is set up in two steps: the [base deployment](#base-deployment-deployazureps1) (`deploy/azure.ps1`: PostgreSQL, Azure OpenAI, API and UI apps) and the [upgrade to multi-user mode](#upgrade-to-multi-user-mode-v2) (`deploy/azure-multiuser.ps1`: Microsoft sign-in, per-user Dropbox sync). Run the upgrade right after the base deployment; the base script alone still creates the v1-style UI with a shared password. Optional: [idle auto-stop](#idle-auto-stop-and-on-demand-start-optional-saves-the-postgresql-cost) of PostgreSQL. This is a prototype, **not production-hardened**.
+The Azure deployment is set up in two steps: the [base deployment](#base-deployment-deployazureps1) (`deploy/azure.ps1`: PostgreSQL, Azure OpenAI, API and UI apps) and the [upgrade to multi-user mode](#upgrade-to-multi-user-mode) (`deploy/azure-multiuser.ps1`: Microsoft sign-in, per-user Dropbox sync). Run the upgrade right after the base deployment; the base script alone still creates the old single-user UI with a shared password. Optional: [idle auto-stop](#idle-auto-stop-and-on-demand-start-optional-saves-the-postgresql-cost) of PostgreSQL. This is a prototype, **not production-hardened**.
 
 ## Architecture, frameworks and processes
 
@@ -58,7 +58,7 @@ flowchart LR
 - **Image build and deploy** (`build-and-deploy-image.yml`): builds `linux/amd64` on pushes to `main` / `azure-deployment` that touch the app, `Dockerfile`, `requirements.txt` or the workflow, and pushes `ghcr.io/adranale/rag-showcase:<full-commit-sha>`. Deployments use the immutable SHA tag; `latest` only comes from `main`.
 - **Preflight** (`deploy/azure.ps1 -PreflightOnly`): creates nothing. Checks tools, the explicitly given subscription, region, PostgreSQL restriction, names, image pullability and platform, and OpenAI model/SKU quota. `-ProbePostgres` proves PostgreSQL can really be created by creating and deleting a throwaway server.
 - **Provisioning** (`deploy/azure.ps1`, run locally by a subscription owner): resource group → PostgreSQL + `VECTOR` extension + database + firewall → Azure OpenAI account and deployment → Container Apps environment → API app (internal) → UI app (public). Generated secrets are saved to `.env.azure` first, never printed, and stored as Container Apps secrets. Every `az` call goes through a helper that adds `--subscription`, uses a safe operation label and redacts secrets in errors.
-- **Ingestion**: `ops.init_db` → `ingestion.sample_data` → `ingestion.embed` against the database from your machine (needs outbound port 5432 and the `allow-my-ip` firewall rule). The documents have no owner, so v2 users only see them after `ops.init_db` assigns them to `OWNER_EMAIL`.
+- **Ingestion**: `ops.init_db` → `ingestion.sample_data` → `ingestion.embed` against the database from your machine (needs outbound port 5432 and the `allow-my-ip` firewall rule). The documents have no owner, so users only see them after `ops.init_db` assigns them to `OWNER_EMAIL`.
 - **Authentication to Azure from CI**: OIDC federated credential bound to the `azure-test` GitHub environment, which requires a reviewer's approval for every run. No Azure password is stored in GitHub.
 - **Teardown**: manual only, from your machine (see Cleanup).
 - **Idle auto-stop** (optional, `deploy/azure-autostop.ps1`): a scheduled job stops PostgreSQL after 30 idle minutes; the API starts it again on demand (managed identities, Contributor on the server only).
@@ -150,7 +150,7 @@ In GitHub: Settings → Environments → create `azure-test` (add yourself as re
 | `AZURE_TENANT_ID` | Azure tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | the NGO subscription ID |
 
-and the variable `AZURE_SUFFIX` (deployment suffix used by **Build and deploy image**). The v2 secrets for **Azure multi-user setup** are listed in [Upgrade to multi-user mode](#upgrade-to-multi-user-mode-v2).
+and the variable `AZURE_SUFFIX` (deployment suffix used by **Build and deploy image**). The secrets for **Azure multi-user setup** are listed in [Upgrade to multi-user mode](#upgrade-to-multi-user-mode).
 
 If `.env.azure` is lost, the credentials can be read from the Container Apps secrets (`az containerapp secret show --name rag-api --resource-group <rg> --secret-name db-url --show-values`).
 
@@ -166,9 +166,9 @@ The image must be built from a commit that contains `app/wake.py` and `ops/idle_
 
 Notes: the job does not know about direct database use. After a manual start (for example ingestion from your machine) the server is stopped 30–40 minutes later unless the API receives requests; start a stopped server before working on the database directly (`az postgres flexible-server start --name pg-rag-<suffix> --resource-group rg-rag-showcase --subscription <subscription-id>`). A stopped server still bills for its storage. To remove the feature: `az containerapp job delete --name rag-idle-stop --resource-group rg-rag-showcase --subscription <subscription-id>` and remove `POSTGRES_RESOURCE_ID` from `rag-api`. Verified on the test deployment: the job stopped the server after 30 idle minutes, the next question returned the "database is starting" message, and a retry a few minutes later gave a cited answer.
 
-## Upgrade to multi-user mode (v2)
+## Upgrade to multi-user mode
 
-Prerequisite: the [base deployment](#base-deployment-deployazureps1) (`azure.ps1`) exists. How multi-user mode works: [multi-user.md](multi-user.md). `azure-multiuser.ps1` then upgrades it in place (a fresh `azure.ps1` run still creates the v1-style UI with a password; run the upgrade right after it). Register the Entra app (redirect `https://<ui-fqdn>/oauth2callback`), the Dropbox app (redirect `https://<ui-fqdn>/`) and optionally the Google OAuth client (redirect `https://<ui-fqdn>/`, see [Google Drive setup](multi-user.md#google-drive-setup)) first; the UI FQDN is printed by the preflight.
+Prerequisite: the [base deployment](#base-deployment-deployazureps1) (`azure.ps1`) exists. How multi-user mode works: [multi-user.md](multi-user.md). `azure-multiuser.ps1` then upgrades it in place (a fresh `azure.ps1` run still creates the old single-user UI with a password; run the upgrade right after it). Register the Entra app (redirect `https://<ui-fqdn>/oauth2callback`), the Dropbox app (redirect `https://<ui-fqdn>/`) and optionally the Google OAuth client (redirect `https://<ui-fqdn>/`, see [Google Drive setup](multi-user.md#google-drive-setup)) first; the UI FQDN is printed by the preflight.
 
 ```powershell
 $env:MS_CLIENT_ID = '...'; $env:MS_CLIENT_SECRET = '...'          # Entra app (personal accounts)
@@ -187,7 +187,7 @@ It creates the manual jobs `rag-migrate` (schema, `rag_runtime` role, owner assi
 
 **E-mail notifications** (`-EmailNotifications`; workflow input `email_notifications`, default on): the script creates or reuses an Email Communication Service `acs-email-<suffix>` with an Azure-managed domain (sender `DoNotReply@<id>.azurecomm.net`, no DNS needed) and a Communication Service `acs-rag-<suffix>` (both `global`, data location Europe), and gives `rag-api` the connection string (secret `acs-email-connection`), `ACS_EMAIL_SENDER` and `UI_BASE_URL`. A subscription owner must register the resource provider once (the CI identity cannot): `az provider register --namespace Microsoft.Communication --subscription <id> --wait`. Cost: no fixed fee, charged per e-mail sent (check current ACS e-mail pricing); Azure-managed domains have low sending limits, and their mail may land in spam until the recipient marks it as safe.
 
-Invite users with the invite link on the **Admin** page (the `OWNER_EMAIL` account is admin). Fallback without an admin: `az containerapp job start -g <rg> -n rag-admin --command python --args ops/manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The sample-data workflows use the admin connection and write unowned documents that no user can see: do not use them in v2. If the legacy job `rag-ingest` still exists, delete it (its code was removed): `az containerapp job delete -g <rg> -n rag-ingest --yes`. Verified on Azure: the full upgrade run, the migration and the `Container Apps Jobs Operator` role assignment. Not yet verified: the `rag-sync` trigger from the API.
+Invite users with the invite link on the **Admin** page (the `OWNER_EMAIL` account is admin). Fallback without an admin: `az containerapp job start -g <rg> -n rag-admin --command python --args ops/manage_users.py invite friend@outlook.com`; output goes to Log Analytics (`ContainerAppConsoleLogs_CL`). The admin connection string stays in the `db-url` secrets of `rag-api` and the jobs (unused by the API code); delete `rag-admin`/`rag-migrate` when not needed. The sample-data workflows use the admin connection and write unowned documents that no user can see: do not use them in multi-user mode. If the legacy job `rag-ingest` still exists, delete it (its code was removed): `az containerapp job delete -g <rg> -n rag-ingest --yes`. Verified on Azure: the full upgrade run, the migration and the `Container Apps Jobs Operator` role assignment. Not yet verified: the `rag-sync` trigger from the API.
 
 ## Security and networking notes
 - PostgreSQL is created with `--public-access 0.0.0.0`, Azure's “allow Azure services” rule: **any resource in any Azure tenant** may attempt to connect. Access still requires the credentials; TLS is required (`require_secure_transport=on`, `sslmode=require`). Your machine gets a single `/32` rule (`allow-my-ip`) for ingestion; delete it afterwards.
@@ -205,4 +205,4 @@ az group delete --name rg-rag-showcase --subscription <subscription-id>
 rm .env.azure
 ```
 
-Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on the user endpoints). `APP_PASSWORD` was removed in v2 (Microsoft login replaces it). See `.env.azure.example` and [multi-user.md](multi-user.md).
+Settings: `GENERATION_PROVIDER` (`ollama` default, or `azure_openai`), `API_KEY` (optional; enforces the `X-API-Key` header on the user endpoints). `APP_PASSWORD` was removed with multi-user mode (Microsoft login replaces it). See `.env.azure.example` and [multi-user.md](multi-user.md).
